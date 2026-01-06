@@ -1,13 +1,23 @@
 # local-street-db
 
-Builds a compact, searchable street-name index from OpenStreetMap PBF extracts. The pipeline extracts named streets and a small set of named POIs, merges nearby segments, and packs the result into a binary trie used by the demo web app.
+## What is this for?
+
+This repo is mostly about its artifact `street_trie.packed.tar.xz`. 
+It will allow you to turn names of streets and POIs into geolocations on this planet.
+Check out the demo web page and `web/app.js` to see how you could integrate the file into your tool.
+If you for example want to offer your users a way to geotag images based on addresses, it might be the right thing for you to host yourself or deploy together with your application.
+
+## What does this repo do?
+
+This repo contains the code to generate the artifact and a demo webpage that uses it.
+The code in this repo builds a compact, searchable street-name index from OpenStreetMap PBF extracts, extracts named streets and named POIs, deduplicates aggressively, and packs the result into a binary trie used by the demo web app.
 
 ## What’s in this repo
 
+- `web/` Leaflet demo that loads the artifact for lookup.
 - `extract/` Rust CLI that reads `.pbf` or `.osm` and writes a normalized CSV.
 - `trie/` Python builder that compresses street names into a packed trie.
 - `scripts/` orchestration and download helpers.
-- `web/` Leaflet demo that loads sharded tries from `build/shards/`.
 
 ## Requirements
 
