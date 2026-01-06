@@ -5,9 +5,6 @@ from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import osmium
-import osmium.area
-from shapely import wkb
-from shapely.geometry import Point
 
 NAME_KEYS = {
     "name",
@@ -72,55 +69,10 @@ def polygon_centroid(coords: List[Tuple[float, float]]) -> Tuple[float, float]:
     return cx, cy
 
 
-class AdminBoundaryCollector(osmium.SimpleHandler):
-    def __init__(self, admin_levels: List[str]):
-        super().__init__()
-        self.admin_levels = set(admin_levels)
-        self.boundaries: List[Tuple[str, object]] = []
-        self.wkb_factory = osmium.geom.WKBFactory()
-
-    def area(self, a):
-        if a.tags.get("boundary") != "administrative":
-            return
-        admin_level = a.tags.get("admin_level")
-        if admin_level not in self.admin_levels:
-            return
-        name = a.tags.get("name")
-        if not name:
-            return
-
-        try:
-            geom_wkb = self.wkb_factory.create_multipolygon(a)
-        except RuntimeError:
-            return
-
-        try:
-            if isinstance(geom_wkb, (bytes, bytearray, memoryview)):
-                geom = wkb.loads(geom_wkb)
-            else:
-                geom = wkb.loads(geom_wkb, hex=True)
-        except Exception:
-            return
-
-        if not geom.is_empty:
-            self.boundaries.append((name, geom))
-
-
-def collect_admin_boundaries(input_path: Path, admin_levels: List[str]) -> List[Tuple[str, object]]:
-    collector = AdminBoundaryCollector(admin_levels)
-    manager = osmium.area.AreaManager()
-    buffer = osmium.area.AreaManagerBufferHandler(manager)
-    buffer.apply_file(str(input_path), locations=True, idx="flex_mem")
-    second = osmium.area.AreaManagerSecondPassHandler(manager, collector)
-    second.apply_file(str(input_path), locations=True, idx="flex_mem")
-    return collector.boundaries
-
-
 class StreetPolygonHandler(osmium.SimpleHandler):
-    def __init__(self, writer: csv.writer, boundaries: List[Tuple[str, object]]):
+    def __init__(self, writer: csv.writer):
         super().__init__()
         self.writer = writer
-        self.boundaries = boundaries
 
     def way(self, w):
         if "highway" not in w.tags:
@@ -149,16 +101,7 @@ class StreetPolygonHandler(osmium.SimpleHandler):
 
         city_addr = w.tags.get("addr:city")
         city_place = w.tags.get("addr:place")
-        city_boundary = None
-
-        if self.boundaries:
-            point = Point(center_lon, center_lat)
-            for boundary_name, boundary_geom in self.boundaries:
-                if boundary_geom.covers(point):
-                    city_boundary = boundary_name
-                    break
-
-        city = city_addr or city_boundary or city_place
+        city = city_addr or city_place
 
         for name in names:
             self.writer.writerow(
@@ -168,7 +111,6 @@ class StreetPolygonHandler(osmium.SimpleHandler):
                     f"{center_lat:.7f}",
                     city or "",
                     city_addr or "",
-                    city_boundary or "",
                     city_place or "",
                 ]
             )
@@ -183,7 +125,7 @@ def find_default_pbf(folder: Path) -> Path:
     return pbfs[0]
 
 
-def extract_to_csv(input_path: Path, output_path: Path, admin_levels: List[str]) -> None:
+def extract_to_csv(input_path: Path, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -194,12 +136,10 @@ def extract_to_csv(input_path: Path, output_path: Path, admin_levels: List[str])
                 "center_lat",
                 "city",
                 "city_addr",
-                "city_boundary",
                 "city_place",
             ]
         )
-        boundaries = collect_admin_boundaries(input_path, admin_levels)
-        handler = StreetPolygonHandler(writer, boundaries)
+        handler = StreetPolygonHandler(writer)
         handler.apply_file(str(input_path), locations=True)
 
 
@@ -218,19 +158,13 @@ def parse_args(argv: Iterable[str] = None) -> argparse.Namespace:
         default=Path("street_polygons.csv"),
         help="Output CSV path.",
     )
-    parser.add_argument(
-        "--admin-levels",
-        default="8",
-        help="Comma-separated admin_level values to treat as city boundaries.",
-    )
     return parser.parse_args(argv)
 
 
 def main() -> None:
     args = parse_args()
     input_path = args.input if args.input else find_default_pbf(Path.cwd())
-    admin_levels = [item.strip() for item in args.admin_levels.split(",") if item.strip()]
-    extract_to_csv(input_path, args.output, admin_levels)
+    extract_to_csv(input_path, args.output)
 
 
 if __name__ == "__main__":
