@@ -5,7 +5,8 @@ const searchInput = document.getElementById("search");
 const MAX_RESULTS = 80;
 let trie = null;
 let locations = [];
-let cities = [];
+let placeNodes = [];
+let placeCities = [];
 let map = null;
 let markersLayer = null;
 
@@ -33,11 +34,23 @@ function decodePackedTrie(buffer) {
     throw new Error("Invalid trie file");
   }
   const version = view.getUint8(4);
-  if (version !== 2) {
+  if (version !== 3) {
     throw new Error(`Unsupported version ${version}`);
   }
   const scale = view.getInt32(5, true);
   let offset = 9;
+
+  let placeNodeCount;
+  [placeNodeCount, offset] = decodeVarint(view, offset);
+  const nodeList = new Array(placeNodeCount);
+  for (let i = 0; i < placeNodeCount; i++) {
+    let nodeLen;
+    [nodeLen, offset] = decodeVarint(view, offset);
+    const bytes = new Uint8Array(buffer, offset, nodeLen);
+    const node = new TextDecoder("utf-8").decode(bytes);
+    offset += nodeLen;
+    nodeList[i] = node;
+  }
 
   let cityCount;
   [cityCount, offset] = decodeVarint(view, offset);
@@ -58,9 +71,11 @@ function decodePackedTrie(buffer) {
     const lon = view.getInt32(offset, true);
     const lat = view.getInt32(offset + 4, true);
     offset += 8;
+    let nodeIdx;
+    [nodeIdx, offset] = decodeVarint(view, offset);
     let cityIdx;
     [cityIdx, offset] = decodeVarint(view, offset);
-    locs[i] = [lon / scale, lat / scale, cityIdx];
+    locs[i] = [lon / scale, lat / scale, nodeIdx, cityIdx];
   }
 
   let nodeCount;
@@ -92,7 +107,7 @@ function decodePackedTrie(buffer) {
     nodes[i] = { edges, values };
   }
 
-  return { locations: locs, cities: cityList, nodes };
+  return { locations: locs, placeNodes: nodeList, placeCities: cityList, nodes };
 }
 
 function initMap() {
@@ -176,7 +191,16 @@ function renderResults(entries) {
     const div = document.createElement("div");
     div.className = "result-item";
     const loc = locations[entry.index];
-    const cityText = loc ? cities[loc[2]] || "Unknown city" : "Unknown city";
+    let cityText = "Unknown city";
+    if (loc) {
+      const nodeName = placeNodes[loc[2]] || "";
+      const cityName = placeCities[loc[3]] || "";
+      if (nodeName && cityName) {
+        cityText = `${nodeName}, ${cityName}`;
+      } else {
+        cityText = nodeName || cityName || "Unknown city";
+      }
+    }
 
     const mainEl = document.createElement("div");
     mainEl.className = "result-main";
@@ -218,7 +242,8 @@ async function loadTrie() {
   const decoded = decodePackedTrie(buffer);
   trie = decoded;
   locations = decoded.locations;
-  cities = decoded.cities;
+  placeNodes = decoded.placeNodes;
+  placeCities = decoded.placeCities;
   statusEl.textContent = `Loaded ${locations.length} locations`;
 
   if (locations.length) {
