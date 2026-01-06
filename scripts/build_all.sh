@@ -21,16 +21,53 @@ if [ ${#pbfs[@]} -eq 0 ]; then
 fi
 
 echo "Extracting CSVs from ${#pbfs[@]} PBF files..."
-for pbf in "${pbfs[@]}"; do
-  base="$(basename "$pbf")"
-  base="${base%.osm.pbf}"
-  base="${base%.pbf}"
-  out_csv="$csv_dir/${base}.csv"
-  echo "  -> $out_csv"
-  cargo run --release --manifest-path "$root_dir/extract/Cargo.toml" -- \
-    --input "$pbf" \
-    --output "$out_csv"
+jobs=16
+
+echo "Using up to $jobs parallel jobs for extraction (set JOBS to override)."
+
+tmp_dir="$(mktemp -d)"
+fifo="$tmp_dir/sem"
+mkfifo "$fifo"
+exec 9<>"$fifo"
+rm -f "$fifo"
+
+for _ in $(seq 1 "$jobs"); do
+  printf "." >&9
 done
+
+pids=()
+for pbf in "${pbfs[@]}"; do
+  read -r -n 1 <&9
+  {
+    base="$(basename "$pbf")"
+    base="${base%.osm.pbf}"
+    base="${base%.pbf}"
+    out_csv="$csv_dir/${base}.csv"
+    echo "  -> $out_csv"
+    status=0
+    cargo run --release --manifest-path "$root_dir/extract/Cargo.toml" -- \
+      --input "$pbf" \
+      --output "$out_csv" || status=$?
+    printf "." >&9
+    exit "$status"
+  } &
+  pids+=("$!")
+done
+
+failed=0
+for pid in "${pids[@]}"; do
+  if ! wait "$pid"; then
+    failed=1
+  fi
+done
+exec 9>&-
+exec 9<&-
+rm -rf "$tmp_dir"
+
+if [ "$failed" -ne 0 ]; then
+  echo "Extraction failed." >&2
+  exit 1
+fi
 
 echo "Merging CSVs into $merged_csv"
 first=1
