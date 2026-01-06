@@ -1,4 +1,4 @@
-# streetdb
+# local-street-db
 
 Builds a compact, searchable street-name index from OpenStreetMap PBF extracts. The pipeline extracts named streets and a small set of named POIs, merges nearby segments, and packs the result into a binary trie used by the demo web app.
 
