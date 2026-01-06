@@ -384,11 +384,27 @@ fn is_major_sight(tags: &Tags) -> bool {
     has_tourism || has_historic || has_man_made || has_landmark || has_tower
 }
 
-fn is_poi(tags: &Tags) -> bool {
+fn poi_kind(tags: &Tags) -> Option<&'static str> {
     if !has_name_tags(tags) {
-        return false;
+        return None;
     }
-    is_airport(tags) || is_train_station(tags) || is_bus_stop(tags) || is_major_sight(tags)
+    if is_airport(tags) {
+        return Some("airport");
+    }
+    if is_train_station(tags) {
+        return Some("train_station");
+    }
+    if is_bus_stop(tags) {
+        return Some("bus_stop");
+    }
+    if is_major_sight(tags) {
+        return Some("sight");
+    }
+    None
+}
+
+fn is_poi(tags: &Tags) -> bool {
+    poi_kind(tags).is_some()
 }
 
 fn resolve_city_fields(
@@ -485,6 +501,7 @@ struct NodeData {
 #[derive(Clone)]
 struct StreetEntry {
     name: String,
+    kind: String,
     center_lon: f64,
     center_lat: f64,
     length_km: f64,
@@ -552,6 +569,7 @@ fn merge_cluster(entries: &[StreetEntry], indices: &[usize]) -> StreetEntry {
     };
 
     let name = entries[indices[0]].name.clone();
+    let kind = pick_mode(entries, indices, |e| e.kind.as_str());
     let city_place_node = pick_mode(entries, indices, |e| e.city_place_node.as_str());
     let city_place_type = pick_mode(entries, indices, |e| e.city_place_type.as_str());
     let city_place_city = pick_mode(entries, indices, |e| e.city_place_city.as_str());
@@ -559,6 +577,7 @@ fn merge_cluster(entries: &[StreetEntry], indices: &[usize]) -> StreetEntry {
 
     StreetEntry {
         name,
+        kind,
         center_lon,
         center_lat,
         length_km: length_sum,
@@ -573,7 +592,10 @@ fn merge_entries(entries: Vec<StreetEntry>) -> Vec<StreetEntry> {
     let mut grouped: Vec<((String, String), Vec<StreetEntry>)> = Vec::new();
     let mut index: HashMap<(String, String), usize> = HashMap::new();
     for entry in entries {
-        let key = (entry.name.clone(), merge_city_key(&entry));
+        let key = (
+            format!("{}\u{1f}{}", entry.name, entry.kind),
+            merge_city_key(&entry),
+        );
         if let Some(&position) = index.get(&key) {
             grouped[position].1.push(entry);
         } else {
@@ -777,6 +799,10 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
             Some(coord) => coord,
             None => continue,
         };
+        let kind = match poi_kind(&node.tags) {
+            Some(kind) => kind,
+            None => continue,
+        };
         let names = collect_names(&node.tags);
         if names.is_empty() {
             continue;
@@ -786,6 +812,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
         for name in names {
             entries.push(StreetEntry {
                 name,
+                kind: kind.to_string(),
                 center_lon: coord.0,
                 center_lat: coord.1,
                 length_km: 0.0,
@@ -802,6 +829,14 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
         if !is_street && !is_poi_way {
             continue;
         }
+        let kind = if is_street {
+            "street"
+        } else {
+            match poi_kind(&way.tags) {
+                Some(kind) => kind,
+                None => continue,
+            }
+        };
 
         let names = collect_names(&way.tags);
         if names.is_empty() {
@@ -847,6 +882,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
         for name in names {
             entries.push(StreetEntry {
                 name,
+                kind: kind.to_string(),
                 center_lon,
                 center_lat,
                 length_km,
@@ -861,6 +897,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
     for entry in merge_entries(entries) {
         writer.write_record([
             entry.name,
+            entry.kind,
             format!("{}", entry.center_lon),
             format!("{}", entry.center_lat),
             entry.city_place_node,
@@ -914,6 +951,14 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
                 if !is_street && !is_poi_way {
                     continue;
                 }
+                let kind = if is_street {
+                    "street"
+                } else {
+                    match poi_kind(&way.tags) {
+                        Some(kind) => kind,
+                        None => continue,
+                    }
+                };
 
                 let names = collect_names(&way.tags);
                 if names.is_empty() {
@@ -962,6 +1007,7 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
                 for name in names {
                     entries.push(StreetEntry {
                         name,
+                        kind: kind.to_string(),
                         center_lon,
                         center_lat,
                         length_km,
@@ -973,9 +1019,10 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
                 }
             }
             OsmObj::Node(node) => {
-                if !is_poi(&node.tags) {
-                    continue;
-                }
+                let kind = match poi_kind(&node.tags) {
+                    Some(kind) => kind,
+                    None => continue,
+                };
                 let names = collect_names(&node.tags);
                 if names.is_empty() {
                     continue;
@@ -986,6 +1033,7 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
                 for name in names {
                     entries.push(StreetEntry {
                         name,
+                        kind: kind.to_string(),
                         center_lon: center.0,
                         center_lat: center.1,
                         length_km: 0.0,
@@ -1003,6 +1051,7 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
     for entry in merge_entries(entries) {
         writer.write_record([
             entry.name,
+            entry.kind,
             format!("{:.7}", entry.center_lon),
             format!("{:.7}", entry.center_lat),
             entry.city_place_node,
@@ -1025,6 +1074,7 @@ fn extract_to_csv(input_path: &Path, output_path: &Path) -> Result<()> {
     let mut writer = Writer::from_path(output_path)?;
     writer.write_record([
         "streetname",
+        "kind",
         "center_lon",
         "center_lat",
         "city_place_node",
@@ -1318,6 +1368,7 @@ mod tests {
             rows[0],
             vec![
                 "streetname",
+                "kind",
                 "center_lon",
                 "center_lat",
                 "city_place_node",
@@ -1334,22 +1385,24 @@ mod tests {
             .skip(1)
             .find(|row| row[0] == "Open Way")
             .unwrap();
-        assert_eq!(open_row[1], "0");
-        assert_eq!(open_row[2], "2");
-        assert_eq!(open_row[3], "");
+        assert_eq!(open_row[1], "street");
+        assert_eq!(open_row[2], "0");
+        assert_eq!(open_row[3], "2");
         assert_eq!(open_row[4], "");
         assert_eq!(open_row[5], "");
         assert_eq!(open_row[6], "");
+        assert_eq!(open_row[7], "");
 
         let main_row = rows
             .iter()
             .skip(1)
             .find(|row| row[0] == "Main Street")
             .unwrap();
-        assert_eq!(main_row[3], "Placetown");
-        assert_eq!(main_row[4], "town");
-        assert_eq!(main_row[5], "Placetown");
+        assert_eq!(main_row[1], "street");
+        assert_eq!(main_row[4], "Placetown");
+        assert_eq!(main_row[5], "town");
         assert_eq!(main_row[6], "Placetown");
+        assert_eq!(main_row[7], "Placetown");
     }
 
     #[test]
@@ -1397,10 +1450,11 @@ mod tests {
             .skip(1)
             .find(|row| row[0] == "Hamlet Road")
             .unwrap();
-        assert_eq!(hamlet_row[3], "Tinyham");
-        assert_eq!(hamlet_row[4], "hamlet");
-        assert_eq!(hamlet_row[5], "Bigtown");
+        assert_eq!(hamlet_row[1], "street");
+        assert_eq!(hamlet_row[4], "Tinyham");
+        assert_eq!(hamlet_row[5], "hamlet");
         assert_eq!(hamlet_row[6], "Bigtown");
+        assert_eq!(hamlet_row[7], "Bigtown");
     }
 
     #[test]
@@ -1425,7 +1479,7 @@ mod tests {
         assert_eq!(data_rows.len(), 1);
         assert_eq!(data_rows[0][0], "Dave Burns Drive");
 
-        let lat: f64 = data_rows[0][2].parse().unwrap();
+        let lat: f64 = data_rows[0][3].parse().unwrap();
         assert!((lat - 0.001).abs() < 1e-9);
     }
 
@@ -1442,11 +1496,11 @@ mod tests {
             .has_headers(false)
             .from_path(&out_path)
             .unwrap();
-        let mut names: Vec<String> = reader
+        let rows: Vec<Vec<String>> = reader
             .records()
-            .skip(1)
-            .map(|row| row.unwrap()[0].to_string())
+            .map(|row| row.unwrap().iter().map(|value| value.to_string()).collect())
             .collect();
+        let mut names: Vec<String> = rows.iter().skip(1).map(|row| row[0].to_string()).collect();
         names.sort();
         let expected: Vec<String> = vec![
             "Central Station",
@@ -1458,5 +1512,14 @@ mod tests {
         .map(String::from)
         .collect();
         assert_eq!(names, expected);
+
+        let mut kinds: Vec<String> = rows.iter().skip(1).map(|row| row[1].to_string()).collect();
+        kinds.sort();
+        let expected_kinds: Vec<String> =
+            vec!["airport", "bus_stop", "sight", "train_station"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        assert_eq!(kinds, expected_kinds);
     }
 }
