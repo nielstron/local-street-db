@@ -250,12 +250,14 @@ def pack_trie(
     node_names: List[str],
     city_names: List[str],
     trie: Dict,
-    scale: int = 1_000_000,
+    scale: int = 10_000,
 ) -> bytes:
     out = bytearray()
     out.extend(b"STRI")
-    out.append(4)
-    out.extend(scale.to_bytes(4, "little", signed=True))
+    out.append(5)
+    if scale < 0 or scale > 0xFFFFFF:
+        raise ValueError("scale must fit in 3 bytes")
+    out.extend(scale.to_bytes(3, "little", signed=False))
 
     out.extend(encode_varint(len(node_names)))
     for node_name in node_names:
@@ -273,26 +275,20 @@ def pack_trie(
     for lon, lat, node_idx, city_idx in locations:
         lon_i = int(round(lon * scale))
         lat_i = int(round(lat * scale))
-        out.extend(lon_i.to_bytes(4, "little", signed=True))
-        out.extend(lat_i.to_bytes(4, "little", signed=True))
+        out.extend(lon_i.to_bytes(3, "little", signed=True))
+        out.extend(lat_i.to_bytes(3, "little", signed=True))
         out.extend(encode_varint(node_idx))
         out.extend(encode_varint(city_idx))
 
     nodes = build_nodes(trie)
-    labels = sorted({label for node in nodes for label, _ in node["edges"]})
-    label_index = {label: idx for idx, label in enumerate(labels)}
-    out.extend(encode_varint(len(labels)))
-    for label in labels:
-        label_bytes = label.encode("utf-8")
-        out.extend(encode_varint(len(label_bytes)))
-        out.extend(label_bytes)
-
     out.extend(encode_varint(len(nodes)))
     for node in nodes:
         edges = node["edges"]
         out.extend(encode_varint(len(edges)))
         for label, child_idx in edges:
-            out.extend(encode_varint(label_index[label]))
+            label_bytes = label.encode("utf-8")
+            out.extend(encode_varint(len(label_bytes)))
+            out.extend(label_bytes)
             out.extend(encode_varint(child_idx))
 
         values = node["values"]

@@ -117,14 +117,14 @@ def test_pack_trie_binary_format() -> None:
         payload["city_place_nodes"],
         payload["city_place_cities"],
         payload["trie"],
-        scale=10_000_000,
+        scale=10_000,
     )
 
     assert data[:4] == b"STRI"
-    assert data[4] == 4
-    scale = int.from_bytes(data[5:9], "little", signed=True)
-    assert scale == 10_000_000
-    offset = 9
+    assert data[4] == 5
+    scale = data[5] | (data[6] << 8) | (data[7] << 16)
+    assert scale == 10_000
+    offset = 8
 
     node_count, offset = decode_varint(data, offset)
     assert node_count == 1
@@ -142,30 +142,25 @@ def test_pack_trie_binary_format() -> None:
 
     loc_count, offset = decode_varint(data, offset)
     assert loc_count == 1
-    lon = int.from_bytes(data[offset : offset + 4], "little", signed=True)
-    lat = int.from_bytes(data[offset + 4 : offset + 8], "little", signed=True)
-    offset += 8
+    lon = int.from_bytes(data[offset : offset + 3], "little", signed=True)
+    lat = int.from_bytes(data[offset + 3 : offset + 6], "little", signed=True)
+    offset += 6
     node_idx, offset = decode_varint(data, offset)
     city_idx, offset = decode_varint(data, offset)
-    assert lon == 10_000_000
-    assert lat == 20_000_000
+    assert lon == 10_000
+    assert lat == 20_000
     assert node_idx == 0
     assert city_idx == 0
-
-    label_count, offset = decode_varint(data, offset)
-    assert label_count == 1
-    label_len, offset = decode_varint(data, offset)
-    label = data[offset : offset + label_len].decode("utf-8")
-    offset += label_len
-    assert label == "a"
 
     trie_node_count, offset = decode_varint(data, offset)
     assert trie_node_count == 2
 
     edge_count, offset = decode_varint(data, offset)
     assert edge_count == 1
-    label_idx, offset = decode_varint(data, offset)
-    assert label_idx == 0
+    label_len, offset = decode_varint(data, offset)
+    label = data[offset : offset + label_len].decode("utf-8")
+    offset += label_len
+    assert label == "a"
     child_idx, offset = decode_varint(data, offset)
     assert child_idx == 1
 

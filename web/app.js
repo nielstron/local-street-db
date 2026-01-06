@@ -55,6 +55,17 @@ function decodeVarint(view, offset) {
   return [value, offset];
 }
 
+function decodeInt24(view, offset) {
+  let value =
+    view.getUint8(offset) |
+    (view.getUint8(offset + 1) << 8) |
+    (view.getUint8(offset + 2) << 16);
+  if (value & 0x800000) {
+    value |= 0xff000000;
+  }
+  return [value, offset + 3];
+}
+
 function decodePackedTrie(buffer) {
   const view = new DataView(buffer);
   const magic = String.fromCharCode(
@@ -67,11 +78,21 @@ function decodePackedTrie(buffer) {
     throw new Error("Invalid trie file");
   }
   const version = view.getUint8(4);
-  if (version !== 3 && version !== 4) {
+  if (version !== 3 && version !== 4 && version !== 5) {
     throw new Error(`Unsupported version ${version}`);
   }
-  const scale = view.getInt32(5, true);
-  let offset = 9;
+  let scale;
+  let offset;
+  if (version === 5) {
+    scale =
+      view.getUint8(5) |
+      (view.getUint8(6) << 8) |
+      (view.getUint8(7) << 16);
+    offset = 8;
+  } else {
+    scale = view.getInt32(5, true);
+    offset = 9;
+  }
 
   let placeNodeCount;
   [placeNodeCount, offset] = decodeVarint(view, offset);
@@ -101,9 +122,16 @@ function decodePackedTrie(buffer) {
   [count, offset] = decodeVarint(view, offset);
   const locs = new Array(count);
   for (let i = 0; i < count; i++) {
-    const lon = view.getInt32(offset, true);
-    const lat = view.getInt32(offset + 4, true);
-    offset += 8;
+    let lon;
+    let lat;
+    if (version === 5) {
+      [lon, offset] = decodeInt24(view, offset);
+      [lat, offset] = decodeInt24(view, offset);
+    } else {
+      lon = view.getInt32(offset, true);
+      lat = view.getInt32(offset + 4, true);
+      offset += 8;
+    }
     let nodeIdx;
     [nodeIdx, offset] = decodeVarint(view, offset);
     let cityIdx;
