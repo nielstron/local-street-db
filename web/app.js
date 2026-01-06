@@ -5,6 +5,7 @@ const searchInput = document.getElementById("search");
 const MAX_RESULTS = 80;
 let trie = null;
 let locations = [];
+let cities = [];
 let map = null;
 let markersLayer = null;
 
@@ -32,11 +33,23 @@ function decodePackedTrie(buffer) {
     throw new Error("Invalid trie file");
   }
   const version = view.getUint8(4);
-  if (version !== 1) {
+  if (version !== 2) {
     throw new Error(`Unsupported version ${version}`);
   }
   const scale = view.getInt32(5, true);
   let offset = 9;
+
+  let cityCount;
+  [cityCount, offset] = decodeVarint(view, offset);
+  const cityList = new Array(cityCount);
+  for (let i = 0; i < cityCount; i++) {
+    let cityLen;
+    [cityLen, offset] = decodeVarint(view, offset);
+    const bytes = new Uint8Array(buffer, offset, cityLen);
+    const city = new TextDecoder("utf-8").decode(bytes);
+    offset += cityLen;
+    cityList[i] = city;
+  }
 
   let count;
   [count, offset] = decodeVarint(view, offset);
@@ -45,7 +58,9 @@ function decodePackedTrie(buffer) {
     const lon = view.getInt32(offset, true);
     const lat = view.getInt32(offset + 4, true);
     offset += 8;
-    locs[i] = [lon / scale, lat / scale];
+    let cityIdx;
+    [cityIdx, offset] = decodeVarint(view, offset);
+    locs[i] = [lon / scale, lat / scale, cityIdx];
   }
 
   let nodeCount;
@@ -77,7 +92,7 @@ function decodePackedTrie(buffer) {
     nodes[i] = { edges, values };
   }
 
-  return { locations: locs, nodes };
+  return { locations: locs, cities: cityList, nodes };
 }
 
 function initMap() {
@@ -191,6 +206,7 @@ async function loadTrie() {
   const decoded = decodePackedTrie(buffer);
   trie = decoded;
   locations = decoded.locations;
+  cities = decoded.cities;
   statusEl.textContent = `Loaded ${locations.length} locations`;
 
   if (locations.length) {

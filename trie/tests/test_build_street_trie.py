@@ -70,7 +70,11 @@ def test_lookup_trie_with_compressed_edges():
 
 
 def test_write_payload_msgpack(tmp_path: Path) -> None:
-    payload = {"locations": [(1.0, 2.0)], "trie": {"a": {"$": [0]}}}
+    payload = {
+        "locations": [(1.0, 2.0, 0)],
+        "cities": ["Testville"],
+        "trie": {"a": {"$": [0]}},
+    }
     out_path = tmp_path / "trie.msgpack"
 
     write_payload(payload, out_path, "msgpack")
@@ -78,7 +82,11 @@ def test_write_payload_msgpack(tmp_path: Path) -> None:
     import msgpack
 
     data = msgpack.unpackb(out_path.read_bytes(), raw=False)
-    assert data == {"locations": [[1.0, 2.0]], "trie": {"a": {"$": [0]}}}
+    assert data == {
+        "locations": [[1.0, 2.0, 0]],
+        "cities": ["Testville"],
+        "trie": {"a": {"$": [0]}},
+    }
 
 
 def decode_varint(data: bytes, offset: int) -> tuple[int, int]:
@@ -95,22 +103,35 @@ def decode_varint(data: bytes, offset: int) -> tuple[int, int]:
 
 
 def test_pack_trie_binary_format() -> None:
-    payload = {"locations": [(1.0, 2.0)], "trie": {"a": {"$": [0]}}}
-    data = pack_trie(payload["locations"], payload["trie"], scale=10_000_000)
+    payload = {
+        "locations": [(1.0, 2.0, 0)],
+        "cities": ["Testville"],
+        "trie": {"a": {"$": [0]}},
+    }
+    data = pack_trie(payload["locations"], payload["cities"], payload["trie"], scale=10_000_000)
 
     assert data[:4] == b"STRI"
-    assert data[4] == 1
+    assert data[4] == 2
     scale = int.from_bytes(data[5:9], "little", signed=True)
     assert scale == 10_000_000
     offset = 9
+
+    city_count, offset = decode_varint(data, offset)
+    assert city_count == 1
+    city_len, offset = decode_varint(data, offset)
+    city = data[offset : offset + city_len].decode("utf-8")
+    offset += city_len
+    assert city == "Testville"
 
     loc_count, offset = decode_varint(data, offset)
     assert loc_count == 1
     lon = int.from_bytes(data[offset : offset + 4], "little", signed=True)
     lat = int.from_bytes(data[offset + 4 : offset + 8], "little", signed=True)
     offset += 8
+    city_idx, offset = decode_varint(data, offset)
     assert lon == 10_000_000
     assert lat == 20_000_000
+    assert city_idx == 0
 
     node_count, offset = decode_varint(data, offset)
     assert node_count == 2
@@ -139,13 +160,15 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
     csv_path = tmp_path / "streets.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["streetname", "center_lon", "center_lat"])
-        writer.writerow(["Main St", "1.0", "2.0"])
-        writer.writerow(["Main St", "3.0", "4.0"])
-        writer.writerow(["Second St", "5.0", "6.0"])
+        writer.writerow(["streetname", "center_lon", "center_lat", "city"])
+        writer.writerow(["Main St", "1.0", "2.0", "City A"])
+        writer.writerow(["Main St", "1.0", "2.0", "City A"])
+        writer.writerow(["Main St", "3.0", "4.0", "City B"])
+        writer.writerow(["Second St", "5.0", "6.0", "City C"])
 
-    locations, trie = build_trie(csv_path)
-    assert locations == [(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]
+    locations, cities, trie = build_trie(csv_path)
+    assert locations == [(1.0, 2.0, 0), (3.0, 4.0, 1), (5.0, 6.0, 2)]
+    assert cities == ["City A", "City B", "City C"]
     compressed = compress_trie(trie)
-    assert lookup_trie(compressed, "Main St") == [0, 1]
+    assert lookup_trie(compressed, "Main St") == [0, 0, 1]
     assert lookup_trie(compressed, "Second St") == [2]

@@ -51,12 +51,15 @@ def compress_trie(trie: Dict) -> Dict:
     return compressed
 
 
-def build_trie(input_path: Path) -> Tuple[List[Tuple[float, float]], Dict]:
-    locations: List[Tuple[float, float]] = []
+def build_trie(input_path: Path) -> Tuple[List[Tuple[float, float, int]], List[str], Dict]:
+    locations: List[Tuple[float, float, int]] = []
+    location_index: Dict[Tuple[float, float], int] = {}
+    cities: List[str] = []
+    city_index: Dict[str, int] = {}
     trie: Dict = {}
     with input_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        required = {"streetname", "center_lon", "center_lat"}
+        required = {"streetname", "center_lon", "center_lat", "city"}
         if not required.issubset(reader.fieldnames or []):
             missing = ", ".join(sorted(required - set(reader.fieldnames or [])))
             raise ValueError(f"missing required CSV columns: {missing}")
@@ -71,10 +74,20 @@ def build_trie(input_path: Path) -> Tuple[List[Tuple[float, float]], Dict]:
             except (TypeError, ValueError):
                 continue
 
-            index = len(locations)
-            locations.append((lon, lat))
+            city = (row.get("city") or "").strip()
+            if city not in city_index:
+                city_index[city] = len(cities)
+                cities.append(city)
+            city_idx = city_index[city]
+
+            loc_key = (lon, lat)
+            index = location_index.get(loc_key)
+            if index is None:
+                index = len(locations)
+                location_index[loc_key] = index
+                locations.append((lon, lat, city_idx))
             insert_trie(trie, name, index)
-    return locations, trie
+    return locations, cities, trie
 
 
 def encode_varint(value: int) -> bytes:
@@ -118,18 +131,30 @@ def build_nodes(trie: Dict) -> List[Dict]:
     return nodes
 
 
-def pack_trie(locations: List[Tuple[float, float]], trie: Dict, scale: int = 10_000_000) -> bytes:
+def pack_trie(
+    locations: List[Tuple[float, float, int]],
+    cities: List[str],
+    trie: Dict,
+    scale: int = 10_000_000,
+) -> bytes:
     out = bytearray()
     out.extend(b"STRI")
-    out.append(1)
+    out.append(2)
     out.extend(scale.to_bytes(4, "little", signed=True))
 
+    out.extend(encode_varint(len(cities)))
+    for city in cities:
+        city_bytes = city.encode("utf-8")
+        out.extend(encode_varint(len(city_bytes)))
+        out.extend(city_bytes)
+
     out.extend(encode_varint(len(locations)))
-    for lon, lat in locations:
+    for lon, lat, city_idx in locations:
         lon_i = int(round(lon * scale))
         lat_i = int(round(lat * scale))
         out.extend(lon_i.to_bytes(4, "little", signed=True))
         out.extend(lat_i.to_bytes(4, "little", signed=True))
+        out.extend(encode_varint(city_idx))
 
     nodes = build_nodes(trie)
     out.extend(encode_varint(len(nodes)))
@@ -164,7 +189,7 @@ def write_payload(payload: Dict, output_path: Path, output_format: str) -> None:
         return
 
     if output_format == "packed":
-        packed = pack_trie(payload["locations"], payload["trie"])
+        packed = pack_trie(payload["locations"], payload["cities"], payload["trie"])
         output_path.write_bytes(packed)
         return
 
@@ -198,10 +223,11 @@ def parse_args(argv: Iterable[str] = None) -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     input_path = args.input if args.input else find_default_csv(Path.cwd())
-    locations, trie = build_trie(input_path)
+    locations, cities, trie = build_trie(input_path)
     trie = compress_trie(trie)
     payload = {
         "locations": locations,
+        "cities": cities,
         "trie": trie,
     }
     write_payload(payload, args.output, args.format)
