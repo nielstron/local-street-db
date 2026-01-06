@@ -237,7 +237,7 @@ function updateSearch() {
 
 async function loadTrie() {
   statusEl.textContent = "Loading trie…";
-  const response = await fetch("../street_trie.packed");
+  const response = await fetch("./street_trie.packed");
   const buffer = await response.arrayBuffer();
   const decoded = decodePackedTrie(buffer);
   trie = decoded;

@@ -1,0 +1,85 @@
+name: Deploy Web Demo
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to pull street_trie.packed from (leave empty for latest)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Prepare site
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp -R web/* dist/
+
+      - name: Download street_trie.packed from release
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.release_tag }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["REPO"]
+          tag = os.environ.get("TAG")
+          token = os.environ.get("TOKEN")
+
+          if tag:
+              api_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+          else:
+              api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+
+          req = urllib.request.Request(api_url)
+          if token:
+              req.add_header("Authorization", f"Bearer {token}")
+          req.add_header("Accept", "application/vnd.github+json")
+
+          with urllib.request.urlopen(req) as resp:
+              data = json.loads(resp.read().decode("utf-8"))
+
+          assets = data.get("assets", [])
+          match = next((a for a in assets if a.get("name") == "street_trie.packed"), None)
+          if not match:
+              names = ", ".join(a.get("name", "") for a in assets)
+              raise SystemExit(f"street_trie.packed not found in release assets. Available: {names}")
+
+          download_url = match["browser_download_url"]
+          out_path = os.path.join("dist", "street_trie.packed")
+          with urllib.request.urlopen(download_url) as resp, open(out_path, "wb") as f:
+              f.write(resp.read())
+          print(f"Downloaded {download_url} -> {out_path}")
+          PY
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
