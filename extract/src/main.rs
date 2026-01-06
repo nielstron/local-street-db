@@ -82,21 +82,22 @@ fn polygon_centroid(coords: &[(f64, f64)]) -> Result<(f64, f64)> {
         return Err("polygon must have at least 3 points".into());
     }
 
-    let mut closed = coords.to_vec();
-    if closed.first() != closed.last() {
-        closed.push(coords[0]);
-    }
-    if closed.len() < 4 {
-        return Err("polygon must have at least 3 points".into());
-    }
-
+    let is_closed = coords.len() >= 4 && coords.first() == coords.last();
     let mut area = 0.0;
     let mut cx = 0.0;
     let mut cy = 0.0;
 
-    for i in 0..(closed.len() - 1) {
-        let (x0, y0) = closed[i];
-        let (x1, y1) = closed[i + 1];
+    for i in 0..(coords.len() - 1) {
+        let (x0, y0) = coords[i];
+        let (x1, y1) = coords[i + 1];
+        let cross = x0 * y1 - x1 * y0;
+        area += cross;
+        cx += (x0 + x1) * cross;
+        cy += (y0 + y1) * cross;
+    }
+    if !is_closed {
+        let (x0, y0) = coords[coords.len() - 1];
+        let (x1, y1) = coords[0];
         let cross = x0 * y1 - x1 * y0;
         area += cross;
         cx += (x0 + x1) * cross;
@@ -107,11 +108,12 @@ fn polygon_centroid(coords: &[(f64, f64)]) -> Result<(f64, f64)> {
     if area.abs() < 1e-12 {
         let mut sum_x = 0.0;
         let mut sum_y = 0.0;
-        for (x, y) in closed.iter().take(closed.len() - 1) {
+        let count = if is_closed { coords.len() - 1 } else { coords.len() };
+        for (x, y) in coords.iter().take(count) {
             sum_x += x;
             sum_y += y;
         }
-        let count = (closed.len() - 1) as f64;
+        let count = count as f64;
         return Ok((sum_x / count, sum_y / count));
     }
 
@@ -123,17 +125,13 @@ fn line_midpoint(coords: &[(f64, f64)]) -> Result<(f64, f64)> {
         return Err("line must have at least 2 points".into());
     }
 
-    let mut segments: Vec<((f64, f64), (f64, f64), f64)> = Vec::new();
     let mut total = 0.0;
-
     for i in 0..(coords.len() - 1) {
         let (x0, y0) = coords[i];
         let (x1, y1) = coords[i + 1];
         let dx = x1 - x0;
         let dy = y1 - y0;
-        let len = (dx * dx + dy * dy).sqrt();
-        segments.push(((x0, y0), (x1, y1), len));
-        total += len;
+        total += (dx * dx + dy * dy).sqrt();
     }
 
     if total == 0.0 {
@@ -149,10 +147,15 @@ fn line_midpoint(coords: &[(f64, f64)]) -> Result<(f64, f64)> {
 
     let halfway = total / 2.0;
     let mut acc = 0.0;
-    for (start, end, len) in segments {
+    for i in 0..(coords.len() - 1) {
+        let (x0, y0) = coords[i];
+        let (x1, y1) = coords[i + 1];
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        let len = (dx * dx + dy * dy).sqrt();
         if acc + len >= halfway {
             let t = (halfway - acc) / len;
-            return Ok((start.0 + (end.0 - start.0) * t, start.1 + (end.1 - start.1) * t));
+            return Ok((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t));
         }
         acc += len;
     }
@@ -220,48 +223,81 @@ fn path_length_km(coords: &[(f64, f64)]) -> f64 {
     total
 }
 
-fn nearest_place(point: (f64, f64), places: &[PlaceNode]) -> Option<PlaceNode> {
-    const MAX_DISTANCE_KM: f64 = 75.0;
-    let mut best: Option<(PlaceNode, f64)> = None;
-    for place in places {
-        let distance = haversine_km(point, place.coord);
-        if distance > MAX_DISTANCE_KM {
-            continue;
-        }
-        match best {
-            None => best = Some((place.clone(), distance)),
-            Some((_, best_distance)) if distance < best_distance => {
-                best = Some((place.clone(), distance))
-            }
-            _ => {}
-        }
-    }
-    best.map(|(place, _)| place)
+const MAX_PLACE_DISTANCE_KM: f64 = 75.0;
+
+struct PlaceIndex {
+    places: Vec<PlaceNode>,
+    grid: HashMap<(i32, i32), Vec<usize>>,
+    cell_size_deg: f64,
 }
 
-fn nearest_place_with_types(
-    point: (f64, f64),
-    places: &[PlaceNode],
-    allowed: &[&str],
-) -> Option<PlaceNode> {
-    let mut best: Option<(PlaceNode, f64)> = None;
-    for place in places {
-        if !allowed.contains(&place.place_type.as_str()) {
-            continue;
+impl PlaceIndex {
+    fn new(places: Vec<PlaceNode>, cell_size_deg: f64) -> Self {
+        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (idx, place) in places.iter().enumerate() {
+            let cell = Self::cell_for(place.coord, cell_size_deg);
+            grid.entry(cell).or_default().push(idx);
         }
-        let distance = haversine_km(point, place.coord);
-        if distance > 75.0 {
-            continue;
-        }
-        match best {
-            None => best = Some((place.clone(), distance)),
-            Some((_, best_distance)) if distance < best_distance => {
-                best = Some((place.clone(), distance))
-            }
-            _ => {}
+        Self {
+            places,
+            grid,
+            cell_size_deg,
         }
     }
-    best.map(|(place, _)| place)
+
+    fn nearest(&self, point: (f64, f64), allowed: Option<&[&str]>) -> Option<&PlaceNode> {
+        let mut best: Option<(&PlaceNode, f64)> = None;
+        for idx in self.candidates(point) {
+            let place = &self.places[idx];
+            if let Some(allowed) = allowed {
+                if !allowed.contains(&place.place_type.as_str()) {
+                    continue;
+                }
+            }
+            let distance = haversine_km(point, place.coord);
+            if distance > MAX_PLACE_DISTANCE_KM {
+                continue;
+            }
+            match best {
+                None => best = Some((place, distance)),
+                Some((_, best_distance)) if distance < best_distance => {
+                    best = Some((place, distance))
+                }
+                _ => {}
+            }
+        }
+        best.map(|(place, _)| place)
+    }
+
+    fn candidates(&self, point: (f64, f64)) -> Vec<usize> {
+        let (lon, lat) = point;
+        let delta_lat = MAX_PLACE_DISTANCE_KM / 111.0;
+        let lat_rad = lat.to_radians().abs();
+        let cos_lat = lat_rad.cos();
+        let delta_lon = if cos_lat < 1e-6 {
+            180.0
+        } else {
+            MAX_PLACE_DISTANCE_KM / (111.0 * cos_lat)
+        };
+
+        let min_cell = Self::cell_for((lon - delta_lon, lat - delta_lat), self.cell_size_deg);
+        let max_cell = Self::cell_for((lon + delta_lon, lat + delta_lat), self.cell_size_deg);
+        let mut indices = Vec::new();
+        for x in min_cell.0..=max_cell.0 {
+            for y in min_cell.1..=max_cell.1 {
+                if let Some(bucket) = self.grid.get(&(x, y)) {
+                    indices.extend(bucket.iter().copied());
+                }
+            }
+        }
+        indices
+    }
+
+    fn cell_for(coord: (f64, f64), cell_size_deg: f64) -> (i32, i32) {
+        let x = (coord.0 / cell_size_deg).floor() as i32;
+        let y = (coord.1 / cell_size_deg).floor() as i32;
+        (x, y)
+    }
 }
 
 fn is_in_city(tags: &Tags) -> Option<String> {
@@ -608,6 +644,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
         buf.clear();
     }
 
+    let place_index = PlaceIndex::new(place_nodes, 1.0);
     let mut entries: Vec<StreetEntry> = Vec::new();
     for way in ways {
         if !way.tags.contains_key("highway") || !has_name_tags(&way.tags) {
@@ -619,7 +656,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
             continue;
         }
 
-        let mut coords = Vec::new();
+        let mut coords = Vec::with_capacity(way.node_refs.len());
         let mut valid = true;
         for node_id in &way.node_refs {
             if let Some(coord) = nodes.get(node_id) {
@@ -656,17 +693,14 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
         let city_place = way.tags.get("addr:place");
         let city = city_addr.or(city_place);
         let city_boundary: Option<String> = None;
-        let place_match = nearest_place((center_lon, center_lat), &place_nodes);
+        let place_match = place_index.nearest((center_lon, center_lat), None);
         let city_place_node = place_match.as_ref().map(|place| place.name.clone());
         let city_place_type = place_match.as_ref().map(|place| place.place_type.clone());
         let city_place_city = match place_match.as_ref() {
             Some(place) if is_city_or_town(&place.place_type) => Some(place.name.clone()),
-            Some(_) => nearest_place_with_types(
-                (center_lon, center_lat),
-                &place_nodes,
-                &["city", "town"],
-            )
-            .map(|place| place.name),
+            Some(_) => place_index
+                .nearest((center_lon, center_lat), Some(&["city", "town"]))
+                .map(|place| place.name.clone()),
             None => None,
         };
         let city_is_in = is_in_city(&way.tags);
@@ -735,6 +769,7 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
         OsmObj::Relation(_) => false,
     })?;
     let place_nodes = collect_pbf_place_nodes(&objs);
+    let place_index = PlaceIndex::new(place_nodes, 1.0);
 
     let mut entries: Vec<StreetEntry> = Vec::new();
     for obj in objs.values() {
@@ -751,7 +786,7 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
             continue;
         }
 
-        let mut coords = Vec::new();
+        let mut coords = Vec::with_capacity(way.nodes.len());
         let mut valid = true;
         for node_id in &way.nodes {
             match objs.get(&OsmId::Node(node_id.clone())) {
@@ -791,17 +826,14 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
         let city_place = way.tags.get("addr:place");
         let city = city_addr.or(city_place);
         let city_boundary: Option<String> = None;
-        let place_match = nearest_place((center_lon, center_lat), &place_nodes);
+        let place_match = place_index.nearest((center_lon, center_lat), None);
         let city_place_node = place_match.as_ref().map(|place| place.name.clone());
         let city_place_type = place_match.as_ref().map(|place| place.place_type.clone());
         let city_place_city = match place_match.as_ref() {
             Some(place) if is_city_or_town(&place.place_type) => Some(place.name.clone()),
-            Some(_) => nearest_place_with_types(
-                (center_lon, center_lat),
-                &place_nodes,
-                &["city", "town"],
-            )
-            .map(|place| place.name),
+            Some(_) => place_index
+                .nearest((center_lon, center_lat), Some(&["city", "town"]))
+                .map(|place| place.name.clone()),
             None => None,
         };
         let city_is_in = is_in_city(&way.tags);
@@ -1076,6 +1108,31 @@ mod tests {
         let (mx, my) = line_midpoint(&coords).unwrap();
         assert!((mx - 2.0).abs() < 1e-9);
         assert!(my.abs() < 1e-9);
+    }
+
+    #[test]
+    fn place_index_picks_nearest_and_filters() {
+        let places = vec![
+            PlaceNode {
+                name: "Near".to_string(),
+                place_type: "town".to_string(),
+                coord: (0.0, 0.0),
+            },
+            PlaceNode {
+                name: "Far".to_string(),
+                place_type: "hamlet".to_string(),
+                coord: (5.0, 5.0),
+            },
+        ];
+        let index = PlaceIndex::new(places, 1.0);
+
+        let nearest = index.nearest((0.1, 0.1), None).unwrap();
+        assert_eq!(nearest.name, "Near");
+
+        let filtered = index
+            .nearest((0.1, 0.1), Some(&["city"]))
+            .map(|place| place.name.clone());
+        assert_eq!(filtered, None);
     }
 
     #[test]
