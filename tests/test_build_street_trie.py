@@ -7,7 +7,13 @@ if str(ROOT) not in sys.path:
 
 import csv
 
-from build_street_trie import build_trie, compress_trie, insert_trie, write_payload, pack_trie
+from trie.build_street_trie import (
+    build_trie,
+    compress_trie,
+    insert_trie,
+    write_payload,
+    pack_trie,
+)
 
 
 def lookup_trie(trie, key):
