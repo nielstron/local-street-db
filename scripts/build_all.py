@@ -51,8 +51,11 @@ def merge_csvs(csv_dir: Path, merged_csv: Path) -> None:
 def create_tarball(root_dir: Path, tarball: Path) -> None:
     if tarball.exists():
         tarball.unlink()
-    with tarfile.open(tarball, mode="w:gz", compresslevel=9) as tf:
-        tf.add(root_dir / "build", arcname="build")
+    with tarfile.open(tarball, mode="w:xz") as tf:
+        shards_dir = root_dir / "build" / "shards"
+        if not shards_dir.exists():
+            raise FileNotFoundError(f"missing shards at {shards_dir}")
+        tf.add(shards_dir, arcname="build/shards")
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,7 +76,7 @@ def main() -> int:
     csv_dir = build_dir / "csvs"
     merged_csv = build_dir / "streets_merged.csv"
     packed_trie = build_dir / "street_trie.packed"
-    tarball = build_dir / "streetdb-build.tar.gz"
+    tarball = build_dir / "street_trie.packed.tar.xz"
 
     if not args.from_trie:
         csv_dir.mkdir(parents=True, exist_ok=True)

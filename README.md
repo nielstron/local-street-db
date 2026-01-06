@@ -7,7 +7,7 @@ Builds a compact, searchable street-name index from OpenStreetMap PBF extracts. 
 - `extract/` Rust CLI that reads `.pbf` or `.osm` and writes a normalized CSV.
 - `trie/` Python builder that compresses street names into a packed trie.
 - `scripts/` orchestration and download helpers.
-- `web/` Leaflet demo that loads `street_trie.packed` and renders matches.
+- `web/` Leaflet demo that loads sharded tries from `build/shards/`.
 
 ## Requirements
 
@@ -23,7 +23,7 @@ Builds a compact, searchable street-name index from OpenStreetMap PBF extracts. 
 uv run python scripts/download_country_pbfs.py --out-dir pbfs
 ```
 
-2) Build all assets (extract CSVs, merge, build packed trie, create tarball)
+2) Build all assets (extract CSVs, merge, build packed trie shards, create tarball)
 
 ```
 uv run python scripts/build_all.py
@@ -32,12 +32,14 @@ uv run python scripts/build_all.py
 Outputs are written under `build/`, including:
 
 - `build/streets_merged.csv`
-- `build/street_trie.packed`
-- `build/streetdb-build.tar.gz`
+- `build/street_trie.packed` (output base name for sharding)
+- `build/shards/`
+- `build/street_trie.packed.tar.xz`
 
 3) Run the demo
 
-Serve the repo root with any static server and open `web/index.html`. The app loads `street_trie.packed` from the repo root.
+Serve the repo root with any static server and open `web/index.html`. The app loads shard files from `build/shards/`.
+If you have a prebuilt bundle (`street_trie.packed.tar.xz`), extract it at the repo root so it creates `build/shards/`.
 
 ## Standalone usage
 
