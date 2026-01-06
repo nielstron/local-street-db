@@ -209,6 +209,17 @@ fn haversine_km(a: (f64, f64), b: (f64, f64)) -> f64 {
     2.0 * r * h.sqrt().asin()
 }
 
+fn path_length_km(coords: &[(f64, f64)]) -> f64 {
+    if coords.len() < 2 {
+        return 0.0;
+    }
+    let mut total = 0.0;
+    for i in 0..(coords.len() - 1) {
+        total += haversine_km(coords[i], coords[i + 1]);
+    }
+    total
+}
+
 fn nearest_place(point: (f64, f64), places: &[PlaceNode]) -> Option<PlaceNode> {
     const MAX_DISTANCE_KM: f64 = 75.0;
     let mut best: Option<(PlaceNode, f64)> = None;
@@ -311,6 +322,139 @@ struct NodeData {
     id: Option<i64>,
     coord: Option<(f64, f64)>,
     tags: Tags,
+}
+
+#[derive(Clone)]
+struct StreetEntry {
+    name: String,
+    center_lon: f64,
+    center_lat: f64,
+    length_km: f64,
+    city_place_node: String,
+    city_place_type: String,
+    city_place_city: String,
+    city_resolved: String,
+}
+
+const MERGE_DISTANCE_KM: f64 = 0.2;
+
+fn merge_city_key(entry: &StreetEntry) -> String {
+    if !entry.city_resolved.is_empty() {
+        return entry.city_resolved.clone();
+    }
+    if !entry.city_place_city.is_empty() {
+        return entry.city_place_city.clone();
+    }
+    if !entry.city_place_node.is_empty() {
+        return entry.city_place_node.clone();
+    }
+    String::new()
+}
+
+fn pick_mode(entries: &[StreetEntry], indices: &[usize], getter: fn(&StreetEntry) -> &str) -> String {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for idx in indices {
+        let value = getter(&entries[*idx]);
+        if value.is_empty() {
+            continue;
+        }
+        *counts.entry(value.to_string()).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(value, _)| value)
+        .unwrap_or_default()
+}
+
+fn merge_cluster(entries: &[StreetEntry], indices: &[usize]) -> StreetEntry {
+    let mut weighted_lon = 0.0;
+    let mut weighted_lat = 0.0;
+    let mut weight_sum = 0.0;
+    let mut length_sum = 0.0;
+
+    for idx in indices {
+        let entry = &entries[*idx];
+        let weight = if entry.length_km > 0.0 { entry.length_km } else { 1.0 };
+        weighted_lon += entry.center_lon * weight;
+        weighted_lat += entry.center_lat * weight;
+        weight_sum += weight;
+        length_sum += entry.length_km;
+    }
+
+    let center_lon = if weight_sum > 0.0 {
+        weighted_lon / weight_sum
+    } else {
+        entries[indices[0]].center_lon
+    };
+    let center_lat = if weight_sum > 0.0 {
+        weighted_lat / weight_sum
+    } else {
+        entries[indices[0]].center_lat
+    };
+
+    let name = entries[indices[0]].name.clone();
+    let city_place_node = pick_mode(entries, indices, |e| e.city_place_node.as_str());
+    let city_place_type = pick_mode(entries, indices, |e| e.city_place_type.as_str());
+    let city_place_city = pick_mode(entries, indices, |e| e.city_place_city.as_str());
+    let city_resolved = pick_mode(entries, indices, |e| e.city_resolved.as_str());
+
+    StreetEntry {
+        name,
+        center_lon,
+        center_lat,
+        length_km: length_sum,
+        city_place_node,
+        city_place_type,
+        city_place_city,
+        city_resolved,
+    }
+}
+
+fn merge_entries(entries: Vec<StreetEntry>) -> Vec<StreetEntry> {
+    let mut grouped: Vec<((String, String), Vec<StreetEntry>)> = Vec::new();
+    let mut index: HashMap<(String, String), usize> = HashMap::new();
+    for entry in entries {
+        let key = (entry.name.clone(), merge_city_key(&entry));
+        if let Some(&position) = index.get(&key) {
+            grouped[position].1.push(entry);
+        } else {
+            index.insert(key.clone(), grouped.len());
+            grouped.push((key, vec![entry]));
+        }
+    }
+
+    let mut merged = Vec::new();
+    for (_, group) in grouped {
+        let mut remaining = vec![true; group.len()];
+        for i in 0..group.len() {
+            if !remaining[i] {
+                continue;
+            }
+            remaining[i] = false;
+            let mut cluster = vec![i];
+            let mut queue = vec![i];
+
+            while let Some(idx) = queue.pop() {
+                let base = (group[idx].center_lon, group[idx].center_lat);
+                for j in 0..group.len() {
+                    if !remaining[j] {
+                        continue;
+                    }
+                    let other = (group[j].center_lon, group[j].center_lat);
+                    if haversine_km(base, other) <= MERGE_DISTANCE_KM {
+                        remaining[j] = false;
+                        queue.push(j);
+                        cluster.push(j);
+                    }
+                }
+            }
+
+            merged.push(merge_cluster(&group, &cluster));
+        }
+    }
+
+    merged
 }
 
 fn get_attr_value(event: &BytesStart<'_>, key: &[u8]) -> Result<Option<String>> {
@@ -464,6 +608,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
         buf.clear();
     }
 
+    let mut entries: Vec<StreetEntry> = Vec::new();
     for way in ways {
         if !way.tags.contains_key("highway") || !has_name_tags(&way.tags) {
             continue;
@@ -532,17 +677,31 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
             city_place_city.as_deref(),
             city_place_node.as_deref(),
         ]);
+        let length_km = path_length_km(&coords);
         for name in names {
-            writer.write_record([
+            entries.push(StreetEntry {
                 name,
-                format!("{center_lon}"),
-                format!("{center_lat}"),
-                city_place_node.clone().unwrap_or_default(),
-                city_place_type.clone().unwrap_or_default(),
-                city_place_city.clone().unwrap_or_default(),
-                city_resolved.clone().unwrap_or_default(),
-            ])?;
+                center_lon,
+                center_lat,
+                length_km,
+                city_place_node: city_place_node.clone().unwrap_or_default(),
+                city_place_type: city_place_type.clone().unwrap_or_default(),
+                city_place_city: city_place_city.clone().unwrap_or_default(),
+                city_resolved: city_resolved.clone().unwrap_or_default(),
+            });
         }
+    }
+
+    for entry in merge_entries(entries) {
+        writer.write_record([
+            entry.name,
+            format!("{}", entry.center_lon),
+            format!("{}", entry.center_lat),
+            entry.city_place_node,
+            entry.city_place_type,
+            entry.city_place_city,
+            entry.city_resolved,
+        ])?;
     }
 
     Ok(())
@@ -577,6 +736,7 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
     })?;
     let place_nodes = collect_pbf_place_nodes(&objs);
 
+    let mut entries: Vec<StreetEntry> = Vec::new();
     for obj in objs.values() {
         let way = match obj {
             OsmObj::Way(w) => w,
@@ -652,17 +812,31 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
             city_place_city.as_deref(),
             city_place_node.as_deref(),
         ]);
+        let length_km = path_length_km(&coords);
         for name in names {
-            writer.write_record([
+            entries.push(StreetEntry {
                 name,
-                format!("{center_lon:.7}"),
-                format!("{center_lat:.7}"),
-                city_place_node.clone().unwrap_or_default(),
-                city_place_type.clone().unwrap_or_default(),
-                city_place_city.clone().unwrap_or_default(),
-                city_resolved.clone().unwrap_or_default(),
-            ])?;
+                center_lon,
+                center_lat,
+                length_km,
+                city_place_node: city_place_node.clone().unwrap_or_default(),
+                city_place_type: city_place_type.clone().unwrap_or_default(),
+                city_place_city: city_place_city.clone().unwrap_or_default(),
+                city_resolved: city_resolved.clone().unwrap_or_default(),
+            });
         }
+    }
+
+    for entry in merge_entries(entries) {
+        writer.write_record([
+            entry.name,
+            format!("{:.7}", entry.center_lon),
+            format!("{:.7}", entry.center_lat),
+            entry.city_place_node,
+            entry.city_place_type,
+            entry.city_place_city,
+            entry.city_resolved,
+        ])?;
     }
 
     Ok(())
@@ -857,6 +1031,26 @@ mod tests {
 </osm>
 "#;
 
+    const OSM_MERGE_NEARBY: &str = r#"<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6" generator="test">
+  <node id="1" lat="0.0" lon="0.0" />
+  <node id="2" lat="0.001" lon="0.0" />
+  <node id="3" lat="0.002" lon="0.0" />
+  <way id="40">
+    <nd ref="1" />
+    <nd ref="2" />
+    <tag k="highway" v="residential" />
+    <tag k="name" v="Dave Burns Drive" />
+  </way>
+  <way id="41">
+    <nd ref="2" />
+    <nd ref="3" />
+    <tag k="highway" v="residential" />
+    <tag k="name" v="Dave Burns Drive" />
+  </way>
+</osm>
+"#;
+
     #[test]
     fn split_and_collect_names() {
         let mut tags = Tags::new();
@@ -989,5 +1183,31 @@ mod tests {
         assert_eq!(hamlet_row[4], "hamlet");
         assert_eq!(hamlet_row[5], "Bigtown");
         assert_eq!(hamlet_row[6], "Bigtown");
+    }
+
+    #[test]
+    fn extract_to_csv_merges_nearby_segments() {
+        let dir = tempdir().unwrap();
+        let osm_path = dir.path().join("merge.osm");
+        let out_path = dir.path().join("out.csv");
+        std::fs::write(&osm_path, OSM_MERGE_NEARBY).unwrap();
+
+        extract_to_csv(&osm_path, &out_path).unwrap();
+
+        let mut reader = ReaderBuilder::new()
+            .has_headers(false)
+            .from_path(&out_path)
+            .unwrap();
+        let rows: Vec<Vec<String>> = reader
+            .records()
+            .map(|row| row.unwrap().iter().map(|value| value.to_string()).collect())
+            .collect();
+
+        let data_rows: Vec<&Vec<String>> = rows.iter().skip(1).collect();
+        assert_eq!(data_rows.len(), 1);
+        assert_eq!(data_rows[0][0], "Dave Burns Drive");
+
+        let lat: f64 = data_rows[0][2].parse().unwrap();
+        assert!((lat - 0.001).abs() < 1e-9);
     }
 }
