@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import gzip
 import tarfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures.process import ProcessPoolExecutor
@@ -58,6 +59,20 @@ def create_tarball(root_dir: Path, tarball: Path) -> None:
         tf.add(shards_dir, arcname="build/shards")
 
 
+def gzip_shards(shards_dir: Path, *, keep_original: bool = False) -> list[Path]:
+    if not shards_dir.exists():
+        raise FileNotFoundError(f"missing shards at {shards_dir}")
+    gz_paths: list[Path] = []
+    for shard_path in sorted(shards_dir.glob("*.packed")):
+        gz_path = shard_path.with_suffix(shard_path.suffix + ".gz")
+        with shard_path.open("rb") as src, gzip.open(gz_path, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        gz_paths.append(gz_path)
+        if not keep_original:
+            shard_path.unlink()
+    return gz_paths
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build all streetdb assets.")
     parser.add_argument(
@@ -77,6 +92,7 @@ def main() -> int:
     merged_csv = build_dir / "streets_merged.csv"
     packed_trie = build_dir / "street_trie.packed"
     tarball = build_dir / "street_trie.packed.tar.xz"
+    shards_dir = build_dir / "shards"
 
     if not args.from_trie:
         csv_dir.mkdir(parents=True, exist_ok=True)
@@ -130,6 +146,8 @@ def main() -> int:
             return 1
 
     print(f"Building packed trie at {packed_trie}")
+    if shards_dir.exists():
+        shutil.rmtree(shards_dir)
     run([
         "uv",
         "run",
@@ -142,6 +160,9 @@ def main() -> int:
         "--format",
         "packed",
     ])
+
+    print(f"Gzipping shard files in {shards_dir}")
+    gzip_shards(shards_dir)
 
     print(f"Creating tarball at {tarball}")
     create_tarball(root_dir, tarball)

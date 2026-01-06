@@ -9,7 +9,7 @@ const isLocalhost =
   window.location.hostname === "localhost" ||
   window.location.hostname === "127.0.0.1";
 const SHARD_DIR = isLocalhost ? "/build/shards" : "./build/shards";
-const SHARD_SUFFIX = ".packed";
+const SHARD_SUFFIX = ".packed.gz";
 let trie = null;
 let locations = [];
 let placeNodes = [];
@@ -193,6 +193,24 @@ function decodePackedTrie(buffer) {
   return { locations: locs, placeNodes: nodeList, placeCities: cityList, nodes };
 }
 
+function ensureArrayBuffer(view) {
+  if (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength) {
+    return view.buffer;
+  }
+  return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+}
+
+function maybeGunzip(buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    if (!window.pako || typeof window.pako.ungzip !== "function") {
+      throw new Error("pako is required to decode gzipped shards");
+    }
+    return ensureArrayBuffer(window.pako.ungzip(bytes));
+  }
+  return buffer;
+}
+
 function initMap() {
   map = L.map("map", { zoomControl: true });
   markersLayer = L.layerGroup().addTo(map);
@@ -310,7 +328,7 @@ async function loadShard(shardKey) {
       throw new Error(`Missing shard ${shardKey}`);
     }
     const buffer = await response.arrayBuffer();
-    const decoded = decodePackedTrie(buffer);
+    const decoded = decodePackedTrie(maybeGunzip(buffer));
     shardCache.set(shardKey, decoded);
     shardLoads.delete(shardKey);
     return decoded;

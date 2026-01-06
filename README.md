@@ -33,12 +33,12 @@ Outputs are written under `build/`, including:
 
 - `build/streets_merged.csv`
 - `build/street_trie.packed` (output base name for sharding)
-- `build/shards/`
+- `build/shards/` (contains `*.packed.gz`)
 - `build/street_trie.packed.tar.xz`
 
 3) Run the demo
 
-Serve the repo root with any static server and open `web/index.html`. The app loads shard files from `build/shards/`.
+Serve the repo root with any static server and open `web/index.html`. The app loads gzipped shard files from `build/shards/`.
 If you have a prebuilt bundle (`street_trie.packed.tar.xz`), extract it at the repo root so it creates `build/shards/`.
 
 ## Standalone usage
@@ -58,6 +58,7 @@ uv run python trie/build_street_trie.py --input street_polygons.csv --output str
 ## Tests
 
 ```
+uv run python -m unittest tests/test_build_all.py
 uv run python -m unittest tests/test_download_country_pbfs.py
 uv run python -m pytest trie/tests/test_build_street_trie.py
 cargo test --manifest-path extract/Cargo.toml
