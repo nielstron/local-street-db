@@ -165,12 +165,6 @@ fn has_name_tags(tags: &Tags) -> bool {
         .any(|(key, value)| is_name_key(key) && !value.is_empty())
 }
 
-fn is_admin_boundary(tags: &Tags) -> bool {
-    tags.get("boundary")
-        .map(|value| value.as_str() == "administrative")
-        .unwrap_or(false)
-}
-
 fn is_place_node(tags: &Tags) -> bool {
     let place = tags.get("place").map(|value| value.as_str()).unwrap_or("");
     let has_name = tags
@@ -273,259 +267,6 @@ fn resolve_first_non_empty(values: &[Option<&str>]) -> Option<String> {
         .map(|value| value.to_string())
 }
 
-fn parse_admin_level(tags: &Tags) -> Option<u8> {
-    tags.get("admin_level")
-        .and_then(|value| value.parse::<u8>().ok())
-}
-
-fn polygon_area(coords: &[(f64, f64)]) -> f64 {
-    if coords.len() < 3 {
-        return 0.0;
-    }
-    let mut area = 0.0;
-    let mut prev = coords[coords.len() - 1];
-    for &curr in coords {
-        area += (prev.0 * curr.1) - (curr.0 * prev.1);
-        prev = curr;
-    }
-    0.5 * area
-}
-
-fn point_in_ring(point: (f64, f64), ring: &[(f64, f64)]) -> bool {
-    if ring.len() < 3 {
-        return false;
-    }
-    let mut inside = false;
-    let mut j = ring.len() - 1;
-    for i in 0..ring.len() {
-        let (xi, yi) = ring[i];
-        let (xj, yj) = ring[j];
-        let intersect = ((yi > point.1) != (yj > point.1))
-            && (point.0 < (xj - xi) * (point.1 - yi) / (yj - yi + 1e-12) + xi);
-        if intersect {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
-}
-
-fn boundary_contains(boundary: &BoundaryPolygon, point: (f64, f64)) -> bool {
-    boundary
-        .rings
-        .iter()
-        .any(|ring| point_in_ring(point, ring))
-}
-
-fn lookup_boundaries(
-    point: (f64, f64),
-    boundaries: &[BoundaryPolygon],
-) -> (Option<String>, Option<String>, Vec<(u8, String)>) {
-    let city = find_best_boundary(point, boundaries, &[8, 9]);
-    let country = find_best_boundary(point, boundaries, &[2]);
-    let mut matched_levels = Vec::new();
-    for level in [8u8, 9] {
-        if let Some(name) = find_best_boundary(point, boundaries, &[level]) {
-            matched_levels.push((level, name));
-        }
-    }
-    (city, country, matched_levels)
-}
-
-fn find_best_boundary(
-    point: (f64, f64),
-    boundaries: &[BoundaryPolygon],
-    admin_levels: &[u8],
-) -> Option<String> {
-    let mut best: Option<(&BoundaryPolygon, f64)> = None;
-    for boundary in boundaries {
-        if !admin_levels.contains(&boundary.admin_level) {
-            continue;
-        }
-        if !boundary_contains(boundary, point) {
-            continue;
-        }
-        let area = boundary.area.abs();
-        match best {
-            None => best = Some((boundary, area)),
-            Some((_, best_area)) if area < best_area => best = Some((boundary, area)),
-            _ => {}
-        }
-    }
-    best.map(|(boundary, _)| boundary.name.clone())
-}
-
-fn boundary_from_way(way: &WayData, nodes: &HashMap<i64, (f64, f64)>) -> Option<BoundaryPolygon> {
-    if !is_admin_boundary(&way.tags) {
-        return None;
-    }
-    let name = way.tags.get("name")?.to_string();
-    let admin_level = parse_admin_level(&way.tags)?;
-    let mut ring = Vec::new();
-    for node_id in &way.node_refs {
-        let coord = nodes.get(node_id)?;
-        ring.push(*coord);
-    }
-    if ring.len() < 4 || ring.first() != ring.last() {
-        return None;
-    }
-    let area = polygon_area(&ring);
-    Some(BoundaryPolygon {
-        name,
-        admin_level,
-        rings: vec![ring],
-        area,
-    })
-}
-
-fn relation_boundary_from_xml(
-    relation: &RelationData,
-    ways_by_id: &HashMap<i64, WayData>,
-    nodes: &HashMap<i64, (f64, f64)>,
-) -> Option<BoundaryPolygon> {
-    if !is_admin_boundary(&relation.tags) {
-        return None;
-    }
-    let name = relation.tags.get("name")?.to_string();
-    let admin_level = parse_admin_level(&relation.tags)?;
-    let mut rings = Vec::new();
-    for member in &relation.members {
-        if member.member_type != "way" {
-            continue;
-        }
-        if member.role != "outer" && !member.role.is_empty() {
-            continue;
-        }
-        let way = ways_by_id.get(&member.reference)?;
-        let mut ring = Vec::new();
-        for node_id in &way.node_refs {
-            let coord = nodes.get(node_id)?;
-            ring.push(*coord);
-        }
-        if ring.len() < 4 || ring.first() != ring.last() {
-            continue;
-        }
-        rings.push(ring);
-    }
-    if rings.is_empty() {
-        return None;
-    }
-    let area = rings.iter().map(|ring| polygon_area(ring).abs()).sum();
-    Some(BoundaryPolygon {
-        name,
-        admin_level,
-        rings,
-        area,
-    })
-}
-
-fn collect_xml_boundaries(
-    nodes: &HashMap<i64, (f64, f64)>,
-    ways: &[WayData],
-    ways_by_id: &HashMap<i64, WayData>,
-    relations: &[RelationData],
-) -> Vec<BoundaryPolygon> {
-    let mut boundaries = Vec::new();
-    for way in ways {
-        if let Some(boundary) = boundary_from_way(way, nodes) {
-            boundaries.push(boundary);
-        }
-    }
-    for relation in relations {
-        if let Some(boundary) = relation_boundary_from_xml(relation, ways_by_id, nodes) {
-            boundaries.push(boundary);
-        }
-    }
-    boundaries
-}
-
-fn pbf_way_ring(
-    way: &osmpbfreader::Way,
-    objs: &BTreeMap<OsmId, OsmObj>,
-) -> Option<Vec<(f64, f64)>> {
-    let mut ring = Vec::new();
-    for node_id in &way.nodes {
-        match objs.get(&OsmId::Node(node_id.clone())) {
-            Some(OsmObj::Node(node)) => ring.push((node.lon(), node.lat())),
-            _ => return None,
-        }
-    }
-    if ring.len() < 4 || ring.first() != ring.last() {
-        return None;
-    }
-    Some(ring)
-}
-
-fn relation_boundary_from_pbf(
-    relation: &osmpbfreader::Relation,
-    objs: &BTreeMap<OsmId, OsmObj>,
-) -> Option<BoundaryPolygon> {
-    if !is_admin_boundary(&relation.tags) {
-        return None;
-    }
-    let name = relation.tags.get("name")?.to_string();
-    let admin_level = parse_admin_level(&relation.tags)?;
-    let mut rings = Vec::new();
-    for member in &relation.refs {
-        if let OsmId::Way(_) = member.member {
-            if member.role != "outer" && !member.role.is_empty() {
-                continue;
-            }
-            if let Some(OsmObj::Way(way)) = objs.get(&member.member) {
-                if let Some(ring) = pbf_way_ring(way, objs) {
-                    rings.push(ring);
-                }
-            }
-        }
-    }
-    if rings.is_empty() {
-        return None;
-    }
-    let area = rings.iter().map(|ring| polygon_area(ring).abs()).sum();
-    Some(BoundaryPolygon {
-        name,
-        admin_level,
-        rings,
-        area,
-    })
-}
-
-fn collect_pbf_boundaries(objs: &BTreeMap<OsmId, OsmObj>) -> Vec<BoundaryPolygon> {
-    let mut boundaries = Vec::new();
-    for obj in objs.values() {
-        match obj {
-            OsmObj::Way(way) => {
-                if !is_admin_boundary(&way.tags) {
-                    continue;
-                }
-                let name = match way.tags.get("name") {
-                    Some(value) => value.to_string(),
-                    None => continue,
-                };
-                let admin_level = match parse_admin_level(&way.tags) {
-                    Some(level) => level,
-                    None => continue,
-                };
-                if let Some(ring) = pbf_way_ring(way, objs) {
-                    let area = polygon_area(&ring);
-                    boundaries.push(BoundaryPolygon {
-                        name,
-                        admin_level,
-                        rings: vec![ring],
-                        area,
-                    });
-                }
-            }
-            OsmObj::Relation(relation) => {
-                if let Some(boundary) = relation_boundary_from_pbf(relation, objs) {
-                    boundaries.push(boundary);
-                }
-            }
-            _ => {}
-        }
-    }
-    boundaries
-}
 
 fn collect_pbf_place_nodes(objs: &BTreeMap<OsmId, OsmObj>) -> Vec<PlaceNode> {
     let mut places = Vec::new();
@@ -544,26 +285,6 @@ struct WayData {
     id: Option<i64>,
     node_refs: Vec<i64>,
     tags: Tags,
-}
-
-#[derive(Default)]
-struct RelationMember {
-    member_type: String,
-    reference: i64,
-    role: String,
-}
-
-#[derive(Default)]
-struct RelationData {
-    members: Vec<RelationMember>,
-    tags: Tags,
-}
-
-struct BoundaryPolygon {
-    name: String,
-    admin_level: u8,
-    rings: Vec<Vec<(f64, f64)>>,
-    area: f64,
 }
 
 #[derive(Clone)]
@@ -597,12 +318,9 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
 
     let mut nodes: HashMap<i64, (f64, f64)> = HashMap::new();
     let mut ways: Vec<WayData> = Vec::new();
-    let mut ways_by_id: HashMap<i64, WayData> = HashMap::new();
-    let mut relations: Vec<RelationData> = Vec::new();
     let mut place_nodes: Vec<PlaceNode> = Vec::new();
     let mut current_node: Option<NodeData> = None;
     let mut current_way: Option<WayData> = None;
-    let mut current_relation: Option<RelationData> = None;
     let mut buf = Vec::new();
 
     loop {
@@ -658,32 +376,6 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
                                 node.tags.insert(key.into(), value.into());
                             }
                         }
-                        if let Some(relation) = current_relation.as_mut() {
-                            let key = get_attr_value(&e, b"k")?;
-                            let value = get_attr_value(&e, b"v")?;
-                            if let (Some(key), Some(value)) = (key, value) {
-                                relation.tags.insert(key.into(), value.into());
-                            }
-                        }
-                    }
-                    b"relation" => {
-                        current_relation = Some(RelationData::default());
-                    }
-                    b"member" => {
-                        if let Some(relation) = current_relation.as_mut() {
-                            let member_type = get_attr_value(&e, b"type")?;
-                            let reference = get_attr_value(&e, b"ref")?
-                                .and_then(|value| value.parse::<i64>().ok());
-                            let role = get_attr_value(&e, b"role")?;
-                            if let (Some(member_type), Some(reference)) = (member_type, reference)
-                            {
-                                relation.members.push(RelationMember {
-                                    member_type,
-                                    reference,
-                                    role: role.unwrap_or_default(),
-                                });
-                            }
-                        }
                     }
                     _ => {}
                 }
@@ -709,9 +401,6 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
                             id,
                             ..WayData::default()
                         };
-                        if let Some(id) = way.id {
-                            ways_by_id.insert(id, way.clone());
-                        }
                         ways.push(way);
                     }
                     b"nd" => {
@@ -738,32 +427,6 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
                                 node.tags.insert(key.into(), value.into());
                             }
                         }
-                        if let Some(relation) = current_relation.as_mut() {
-                            let key = get_attr_value(&e, b"k")?;
-                            let value = get_attr_value(&e, b"v")?;
-                            if let (Some(key), Some(value)) = (key, value) {
-                                relation.tags.insert(key.into(), value.into());
-                            }
-                        }
-                    }
-                    b"relation" => {
-                        relations.push(RelationData::default());
-                    }
-                    b"member" => {
-                        if let Some(relation) = current_relation.as_mut() {
-                            let member_type = get_attr_value(&e, b"type")?;
-                            let reference = get_attr_value(&e, b"ref")?
-                                .and_then(|value| value.parse::<i64>().ok());
-                            let role = get_attr_value(&e, b"role")?;
-                            if let (Some(member_type), Some(reference)) = (member_type, reference)
-                            {
-                                relation.members.push(RelationMember {
-                                    member_type,
-                                    reference,
-                                    role: role.unwrap_or_default(),
-                                });
-                            }
-                        }
                     }
                     _ => {}
                 }
@@ -780,14 +443,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
                     }
                 } else if e.name().as_ref() == b"way" {
                     if let Some(way) = current_way.take() {
-                        if let Some(id) = way.id {
-                            ways_by_id.insert(id, way.clone());
-                        }
                         ways.push(way);
-                    }
-                } else if e.name().as_ref() == b"relation" {
-                    if let Some(relation) = current_relation.take() {
-                        relations.push(relation);
                     }
                 }
             }
@@ -795,8 +451,6 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
         }
         buf.clear();
     }
-
-    let boundaries = collect_xml_boundaries(&nodes, &ways, &ways_by_id, &relations);
 
     for way in ways {
         if !way.tags.contains_key("highway") || !has_name_tags(&way.tags) {
@@ -844,8 +498,8 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
         let city_addr = way.tags.get("addr:city");
         let city_place = way.tags.get("addr:place");
         let city = city_addr.or(city_place);
-        let (city_boundary, country_boundary, matched_levels) =
-            lookup_boundaries((center_lon, center_lat), &boundaries);
+        let city_boundary = None;
+        let country_boundary = None;
         let place_match = nearest_place((center_lon, center_lat), &place_nodes);
         let city_place_node = place_match.as_ref().map(|place| place.name.clone());
         let city_place_type = place_match.as_ref().map(|place| place.place_type.clone());
@@ -859,11 +513,6 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
         ]);
         let country_resolved =
             resolve_first_non_empty(&[country_boundary.as_deref(), country_is_in.as_deref()]);
-        let mut level_names: HashMap<u8, String> = HashMap::new();
-        for (level, name) in matched_levels {
-            level_names.insert(level, name);
-        }
-
         for name in names {
             writer.write_record([
                 name,
@@ -886,8 +535,8 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
                 country_is_in.clone().unwrap_or_default(),
                 city_resolved.clone().unwrap_or_default(),
                 country_resolved.clone().unwrap_or_default(),
-                level_names.get(&8).cloned().unwrap_or_default(),
-                level_names.get(&9).cloned().unwrap_or_default(),
+                String::new(),
+                String::new(),
             ])?;
         }
     }
@@ -918,15 +567,10 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
     let mut pbf = OsmPbfReader::new(file);
 
     let objs = pbf.get_objs_and_deps(|obj| match obj {
-        OsmObj::Way(w) => {
-            (w.tags.contains_key("highway") && has_name_tags(&w.tags))
-                || is_admin_boundary(&w.tags)
-        }
-        OsmObj::Relation(r) => is_admin_boundary(&r.tags),
+        OsmObj::Way(w) => w.tags.contains_key("highway") && has_name_tags(&w.tags),
         OsmObj::Node(n) => is_place_node(&n.tags),
+        OsmObj::Relation(_) => false,
     })?;
-
-    let boundaries = collect_pbf_boundaries(&objs);
     let place_nodes = collect_pbf_place_nodes(&objs);
 
     for obj in objs.values() {
@@ -982,8 +626,8 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
         let city_addr = way.tags.get("addr:city");
         let city_place = way.tags.get("addr:place");
         let city = city_addr.or(city_place);
-        let (city_boundary, country_boundary, matched_levels) =
-            lookup_boundaries((center_lon, center_lat), &boundaries);
+        let city_boundary = None;
+        let country_boundary = None;
         let place_match = nearest_place((center_lon, center_lat), &place_nodes);
         let city_place_node = place_match.as_ref().map(|place| place.name.clone());
         let city_place_type = place_match.as_ref().map(|place| place.place_type.clone());
@@ -997,11 +641,6 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
         ]);
         let country_resolved =
             resolve_first_non_empty(&[country_boundary.as_deref(), country_is_in.as_deref()]);
-        let mut level_names: HashMap<u8, String> = HashMap::new();
-        for (level, name) in matched_levels {
-            level_names.insert(level, name);
-        }
-
         for name in names {
             writer.write_record([
                 name,
@@ -1024,8 +663,8 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
                 country_is_in.clone().unwrap_or_default(),
                 city_resolved.clone().unwrap_or_default(),
                 country_resolved.clone().unwrap_or_default(),
-                level_names.get(&8).cloned().unwrap_or_default(),
-                level_names.get(&9).cloned().unwrap_or_default(),
+                String::new(),
+                String::new(),
             ])?;
         }
     }
@@ -1286,9 +925,9 @@ mod tests {
             .unwrap();
         assert_eq!(open_row[1], "0");
         assert_eq!(open_row[2], "2");
-        assert_eq!(open_row[6], "Testville");
-        assert_eq!(open_row[7], "Testland");
-        assert_eq!(open_row[14], "Testville");
+        assert_eq!(open_row[6], "");
+        assert_eq!(open_row[7], "");
+        assert_eq!(open_row[14], "");
 
         let main_row = rows
             .iter()
@@ -1299,7 +938,7 @@ mod tests {
         assert_eq!(main_row[9], "town");
         assert_eq!(main_row[10], "Placetown");
         assert_eq!(main_row[11], "Testland");
-        assert_eq!(main_row[12], "Testville");
+        assert_eq!(main_row[12], "Placetown");
         assert_eq!(main_row[13], "Testland");
     }
 

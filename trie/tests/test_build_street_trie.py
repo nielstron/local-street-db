@@ -160,7 +160,7 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
     csv_path = tmp_path / "streets.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["streetname", "center_lon", "center_lat", "city"])
+        writer.writerow(["streetname", "center_lon", "center_lat", "city_resolved"])
         writer.writerow(["Main St", "1.0", "2.0", "City A"])
         writer.writerow(["Main St", "1.0", "2.0", "City A"])
         writer.writerow(["Main St", "3.0", "4.0", "City B"])

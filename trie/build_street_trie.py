@@ -59,7 +59,7 @@ def build_trie(input_path: Path) -> Tuple[List[Tuple[float, float, int]], List[s
     trie: Dict = {}
     with input_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        required = {"streetname", "center_lon", "center_lat", "city"}
+        required = {"streetname", "center_lon", "center_lat", "city_resolved"}
         if not required.issubset(reader.fieldnames or []):
             missing = ", ".join(sorted(required - set(reader.fieldnames or [])))
             raise ValueError(f"missing required CSV columns: {missing}")
@@ -74,7 +74,7 @@ def build_trie(input_path: Path) -> Tuple[List[Tuple[float, float, int]], List[s
             except (TypeError, ValueError):
                 continue
 
-            city = (row.get("city") or "").strip()
+            city = (row.get("city_resolved") or "").strip()
             if city not in city_index:
                 city_index[city] = len(cities)
                 cities.append(city)

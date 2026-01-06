@@ -130,7 +130,7 @@ function addMarkers(indices) {
 }
 
 function collectMatches(prefix) {
-  const results = new Map();
+  const results = [];
 
   function dfs(nodeIndex, built, remaining) {
     const node = trie.nodes[nodeIndex];
@@ -138,16 +138,13 @@ function collectMatches(prefix) {
 
     if (remaining.length === 0) {
       if (node.values.length) {
-        const key = built.toLowerCase();
-        const entry = results.get(key) || { display: built, indices: [] };
-        if (entry.display.length < built.length) {
-          entry.display = built;
+        for (const idx of node.values) {
+          results.push({ display: built, index: idx });
+          if (results.length >= MAX_RESULTS) return;
         }
-        entry.indices = entry.indices.concat(node.values);
-        results.set(key, entry);
       }
       for (const edge of node.edges) {
-        if (results.size >= MAX_RESULTS) return;
+        if (results.length >= MAX_RESULTS) return;
         dfs(edge.child, built + edge.label, remaining);
       }
       return;
@@ -167,23 +164,38 @@ function collectMatches(prefix) {
   return results;
 }
 
-function renderResults(resultMap) {
+function renderResults(entries) {
   resultsEl.innerHTML = "";
-  const entries = Array.from(resultMap.values()).slice(0, MAX_RESULTS);
-  if (!entries.length) {
+  const limitedEntries = entries.slice(0, MAX_RESULTS);
+  if (!limitedEntries.length) {
     resultsEl.textContent = "No matches";
     return [];
   }
 
-  for (const entry of entries) {
+  for (const entry of limitedEntries) {
     const div = document.createElement("div");
     div.className = "result-item";
-    div.innerHTML = `<span>${entry.display}</span><span>${entry.indices.length}</span>`;
-    div.addEventListener("click", () => addMarkers(entry.indices));
+    const loc = locations[entry.index];
+    const cityText = loc ? cities[loc[2]] || "Unknown city" : "Unknown city";
+
+    const mainEl = document.createElement("div");
+    mainEl.className = "result-main";
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "result-name";
+    nameEl.textContent = entry.display;
+
+    const cityEl = document.createElement("span");
+    cityEl.className = "result-city";
+    cityEl.textContent = cityText;
+
+    mainEl.append(nameEl, cityEl);
+    div.append(mainEl);
+    div.addEventListener("click", () => addMarkers([entry.index]));
     resultsEl.appendChild(div);
   }
 
-  return entries.flatMap((entry) => entry.indices);
+  return limitedEntries.map((entry) => entry.index);
 }
 
 function updateSearch() {

@@ -88,7 +88,28 @@ input {
   border: 1px solid #e1e7e5;
   display: flex;
   justify-content: space-between;
+  align-items: center;
   font-size: 14px;
+}
+
+.result-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.result-name {
+  font-weight: 600;
+}
+
+.result-city {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.result-count {
+  font-weight: 600;
+  color: var(--accent);
 }
 
 #map {
