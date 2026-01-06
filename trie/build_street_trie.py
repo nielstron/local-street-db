@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import unicodedata
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -111,16 +112,25 @@ def build_trie(
 def shard_key_for_name(name: str, shard_len: int) -> str | None:
     if shard_len <= 0:
         return None
-    trimmed = name.strip().lower()
-    if not trimmed:
+    normalized_name = normalize_name(name)
+    if not normalized_name:
         return None
-    prefix = trimmed[:shard_len]
+    prefix = normalized_name[:shard_len]
     normalized = []
     for ch in prefix:
         normalized.append(ch if ch.isascii() and ch.isalnum() else "_")
     while len(normalized) < shard_len:
         normalized.append("_")
     return "".join(normalized)
+
+
+def normalize_name(name: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", name)
+    stripped = "".join(
+        ch for ch in decomposed if unicodedata.category(ch) != "Mn"
+    )
+    lowered = stripped.lower()
+    return "".join(ch for ch in lowered if ch.isalnum())
 
 
 def build_trie_shards(

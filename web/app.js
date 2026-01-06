@@ -21,10 +21,18 @@ let shardLoadId = 0;
 const shardCache = new Map();
 const shardLoads = new Map();
 
+function normalizeSearchValue(value) {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]/gu, "");
+}
+
 function shardKeyForPrefix(value) {
-  const trimmed = value.trim().toLowerCase();
-  if (!trimmed) return null;
-  const prefix = trimmed.slice(0, SHARD_PREFIX_LEN);
+  const normalized = normalizeSearchValue(value.trim());
+  if (!normalized) return null;
+  const prefix = normalized.slice(0, SHARD_PREFIX_LEN);
   let key = "";
   for (const ch of prefix) {
     key += /[a-z0-9]/.test(ch) ? ch : "_";
@@ -192,37 +200,72 @@ function addMarkers(indices) {
 }
 
 function collectMatches(prefix) {
+  const normalizedPrefix = normalizeSearchValue(prefix);
   const results = [];
+  if (!normalizedPrefix) return results;
+  let bestNode = 0;
+  let bestBuilt = "";
+  let bestConsumed = 0;
 
-  function dfs(nodeIndex, built, remaining) {
+  function collectFrom(nodeIndex, built) {
     const node = trie.nodes[nodeIndex];
     if (!node) return;
 
-    if (remaining.length === 0) {
-      if (node.values.length) {
-        for (const idx of node.values) {
-          results.push({ display: built, index: idx });
-          if (results.length >= MAX_RESULTS) return;
-        }
-      }
-      for (const edge of node.edges) {
+    if (node.values.length) {
+      for (const idx of node.values) {
+        results.push({ display: built, index: idx });
         if (results.length >= MAX_RESULTS) return;
-        dfs(edge.child, built + edge.label, remaining);
       }
+    }
+    for (const edge of node.edges) {
+      if (results.length >= MAX_RESULTS) return;
+      collectFrom(edge.child, built + edge.label);
+    }
+  }
+
+  function dfs(nodeIndex, built, remaining, consumed) {
+    const node = trie.nodes[nodeIndex];
+    if (!node) return;
+
+    if (consumed > bestConsumed) {
+      bestConsumed = consumed;
+      bestNode = nodeIndex;
+      bestBuilt = built;
+    }
+
+    if (remaining.length === 0) {
+      collectFrom(nodeIndex, built);
       return;
     }
 
     for (const edge of node.edges) {
-      const edgeLower = edge.label.toLowerCase();
-      if (remaining.startsWith(edgeLower)) {
-        dfs(edge.child, built + edge.label, remaining.slice(edgeLower.length));
-      } else if (edgeLower.startsWith(remaining)) {
-        dfs(edge.child, built + edge.label, "");
+      const edgeNormalized = normalizeSearchValue(edge.label);
+      if (!edgeNormalized) {
+        dfs(edge.child, built + edge.label, remaining, consumed);
+        continue;
+      }
+      if (remaining.startsWith(edgeNormalized)) {
+        dfs(
+          edge.child,
+          built + edge.label,
+          remaining.slice(edgeNormalized.length),
+          consumed + edgeNormalized.length
+        );
+      } else if (edgeNormalized.startsWith(remaining)) {
+        dfs(
+          edge.child,
+          built + edge.label,
+          "",
+          consumed + remaining.length
+        );
       }
     }
   }
 
-  dfs(0, "", prefix);
+  dfs(0, "", normalizedPrefix, 0);
+  if (!results.length && bestConsumed > 0) {
+    collectFrom(bestNode, bestBuilt);
+  }
   return results;
 }
 
@@ -292,14 +335,16 @@ function renderResults(entries) {
 }
 
 async function updateSearch() {
-  const value = searchInput.value.trim();
-  if (!value) {
+  const rawValue = searchInput.value;
+  const value = rawValue.trim();
+  const normalizedValue = normalizeSearchValue(value);
+  if (!normalizedValue) {
     resultsEl.textContent = "";
     statusEl.textContent = "Type 3+ letters to search";
     clearMarkers();
     return;
   }
-  if (value.length < SHARD_PREFIX_LEN) {
+  if (normalizedValue.length < SHARD_PREFIX_LEN) {
     resultsEl.textContent = "Type at least 3 letters";
     statusEl.textContent = "Waiting for prefix";
     clearMarkers();
@@ -340,7 +385,7 @@ async function updateSearch() {
   }
 
   if (!trie) return;
-  const matches = collectMatches(value.toLowerCase());
+  const matches = collectMatches(value);
   const indices = renderResults(matches);
   addMarkers(indices.slice(0, 500));
 }
