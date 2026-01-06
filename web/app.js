@@ -123,8 +123,13 @@ function collectMatches(prefix) {
 
     if (remaining.length === 0) {
       if (node.values.length) {
-        const entry = results.get(built) || [];
-        results.set(built, entry.concat(node.values));
+        const key = built.toLowerCase();
+        const entry = results.get(key) || { display: built, indices: [] };
+        if (entry.display.length < built.length) {
+          entry.display = built;
+        }
+        entry.indices = entry.indices.concat(node.values);
+        results.set(key, entry);
       }
       for (const edge of node.edges) {
         if (results.size >= MAX_RESULTS) return;
@@ -134,9 +139,10 @@ function collectMatches(prefix) {
     }
 
     for (const edge of node.edges) {
-      if (remaining.startsWith(edge.label)) {
-        dfs(edge.child, built + edge.label, remaining.slice(edge.label.length));
-      } else if (edge.label.startsWith(remaining)) {
+      const edgeLower = edge.label.toLowerCase();
+      if (remaining.startsWith(edgeLower)) {
+        dfs(edge.child, built + edge.label, remaining.slice(edgeLower.length));
+      } else if (edgeLower.startsWith(remaining)) {
         dfs(edge.child, built + edge.label, "");
       }
     }
@@ -148,21 +154,21 @@ function collectMatches(prefix) {
 
 function renderResults(resultMap) {
   resultsEl.innerHTML = "";
-  const entries = Array.from(resultMap.entries()).slice(0, MAX_RESULTS);
+  const entries = Array.from(resultMap.values()).slice(0, MAX_RESULTS);
   if (!entries.length) {
     resultsEl.textContent = "No matches";
     return [];
   }
 
-  for (const [name, indices] of entries) {
+  for (const entry of entries) {
     const div = document.createElement("div");
     div.className = "result-item";
-    div.innerHTML = `<span>${name}</span><span>${indices.length}</span>`;
-    div.addEventListener("click", () => addMarkers(indices));
+    div.innerHTML = `<span>${entry.display}</span><span>${entry.indices.length}</span>`;
+    div.addEventListener("click", () => addMarkers(entry.indices));
     resultsEl.appendChild(div);
   }
 
-  return entries.flatMap((entry) => entry[1]);
+  return entries.flatMap((entry) => entry.indices);
 }
 
 function updateSearch() {
@@ -173,7 +179,7 @@ function updateSearch() {
     clearMarkers();
     return;
   }
-  const matches = collectMatches(value);
+  const matches = collectMatches(value.toLowerCase());
   const indices = renderResults(matches);
   addMarkers(indices.slice(0, 500));
 }

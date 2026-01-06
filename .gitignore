@@ -3,5 +3,6 @@
 *.osm
 *.json
 *.packed
+*.svg
 .idea
 __pycache__
