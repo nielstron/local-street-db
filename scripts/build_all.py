@@ -65,7 +65,7 @@ def gzip_shards(shards_dir: Path, *, keep_original: bool = False) -> list[Path]:
     gz_paths: list[Path] = []
     for shard_path in sorted(shards_dir.glob("*.packed")):
         gz_path = shard_path.with_suffix(shard_path.suffix + ".gz")
-        with shard_path.open("rb") as src, gzip.open(gz_path, "wb") as dst:
+        with shard_path.open("rb") as src, gzip.open(gz_path, "wb", compresslevel=9) as dst:
             shutil.copyfileobj(src, dst)
         gz_paths.append(gz_path)
         if not keep_original:
