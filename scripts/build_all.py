@@ -2,6 +2,7 @@
 """Build all streetdb assets from local PBFs."""
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -54,7 +55,18 @@ def create_tarball(root_dir: Path, tarball: Path) -> None:
         tf.add(root_dir / "build", arcname="build")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build all streetdb assets.")
+    parser.add_argument(
+        "--from-trie",
+        action="store_true",
+        help="Skip PBF extraction/merge and rebuild trie + tarball only.",
+    )
+    return parser.parse_args()
+
+
 def main() -> int:
+    args = parse_args()
     root_dir = Path(__file__).resolve().parents[1]
     pbfs_dir = root_dir / "pbfs"
     build_dir = root_dir / "build"
@@ -63,45 +75,56 @@ def main() -> int:
     packed_trie = build_dir / "street_trie.packed"
     tarball = build_dir / "streetdb-build.tar.gz"
 
-    csv_dir.mkdir(parents=True, exist_ok=True)
+    if not args.from_trie:
+        csv_dir.mkdir(parents=True, exist_ok=True)
 
-    pbfs = sorted(pbfs_dir.glob("*.pbf"))
-    if not pbfs:
-        print(f"No .pbf files found in {pbfs_dir}", file=sys.stderr)
-        return 1
+        pbfs = sorted(pbfs_dir.glob("*.pbf"))
+        if not pbfs:
+            print(f"No .pbf files found in {pbfs_dir}", file=sys.stderr)
+            return 1
 
-    print(f"Extracting CSVs from {len(pbfs)} PBF files...")
-    jobs = int(os.environ.get("JOBS", "16"))
-    print(f"Using up to {jobs} parallel jobs for extraction (set JOBS to override).")
+        print(f"Extracting CSVs from {len(pbfs)} PBF files...")
+        jobs = int(os.environ.get("JOBS", "16"))
+        print(
+            f"Using up to {jobs} parallel jobs for extraction (set JOBS to override)."
+        )
 
-    print("Building extractor binary...")
-    run([
-        "cargo",
-        "build",
-        "--release",
-        "--manifest-path",
-        str(root_dir / "extract" / "Cargo.toml"),
-    ])
-    extract_bin = root_dir / "extract" / "target" / "release" / "extract_street_polygons"
+        print("Building extractor binary...")
+        run([
+            "cargo",
+            "build",
+            "--release",
+            "--manifest-path",
+            str(root_dir / "extract" / "Cargo.toml"),
+        ])
+        extract_bin = (
+            root_dir / "extract" / "target" / "release" / "extract_street_polygons"
+        )
 
-    failed = False
-    with ProcessPoolExecutor(max_workers=jobs) as executor:
-        futures = [
-            executor.submit(extract_one, extract_bin, pbf, csv_dir / f"{pbf.stem}.csv")
-            for pbf in pbfs
-        ]
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except subprocess.CalledProcessError:
-                failed = True
+        failed = False
+        with ProcessPoolExecutor(max_workers=jobs) as executor:
+            futures = [
+                executor.submit(
+                    extract_one, extract_bin, pbf, csv_dir / f"{pbf.stem}.csv"
+                )
+                for pbf in pbfs
+            ]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except subprocess.CalledProcessError:
+                    failed = True
 
-    if failed:
-        print("Extraction failed.", file=sys.stderr)
-        return 1
+        if failed:
+            print("Extraction failed.", file=sys.stderr)
+            return 1
 
-    print(f"Merging CSVs into {merged_csv}")
-    merge_csvs(csv_dir, merged_csv)
+        print(f"Merging CSVs into {merged_csv}")
+        merge_csvs(csv_dir, merged_csv)
+    else:
+        if not merged_csv.exists():
+            print(f"Missing merged CSV at {merged_csv}", file=sys.stderr)
+            return 1
 
     print(f"Building packed trie at {packed_trie}")
     run([

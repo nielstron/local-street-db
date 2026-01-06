@@ -360,6 +360,8 @@ def main() -> None:
         output_base = args.output
         if output_base.suffix:
             output_base = output_base.with_suffix("")
+        shards_dir = output_base.parent / "shards"
+        shards_dir.mkdir(parents=True, exist_ok=True)
         for shard_key in sorted(shards.keys()):
             shard = shards[shard_key]
             print(
@@ -378,9 +380,7 @@ def main() -> None:
                 "city_place_cities": shard["city_names"],
                 "trie": shard_trie,
             }
-            shard_output = output_base.parent / (
-                f"{output_base.name}.shard_{shard_key}.packed"
-            )
+            shard_output = shards_dir / f"{output_base.name}.shard_{shard_key}.packed"
             print(f"Writing shard {shard_key} to {shard_output} ({args.format})")
             write_payload(payload, shard_output, args.format)
     else:
