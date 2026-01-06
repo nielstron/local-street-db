@@ -8,6 +8,7 @@ if str(ROOT) not in sys.path:
 import csv
 
 from trie.build_street_trie import (
+    TERMINAL_KEY,
     build_trie,
     compress_trie,
     insert_trie,
@@ -22,7 +23,7 @@ def lookup_trie(trie, key):
     while remaining:
         match = None
         for edge, child in node.items():
-            if edge == "$":
+            if edge == TERMINAL_KEY:
                 continue
             if remaining.startswith(edge):
                 match = (edge, child)
@@ -31,7 +32,7 @@ def lookup_trie(trie, key):
             return []
         edge, node = match
         remaining = remaining[len(edge) :]
-    return node.get("$", [])
+    return node.get(TERMINAL_KEY, [])
 
 
 def test_compress_trie_merges_linear_paths():
@@ -51,7 +52,7 @@ def test_compress_trie_merges_linear_paths():
     assert "r" in ca_node
 
     do_node = compressed["do"]
-    assert do_node.get("$") == [4]
+    assert do_node.get(TERMINAL_KEY) == [4]
     assert "g" in do_node
 
 
@@ -74,7 +75,7 @@ def test_write_payload_msgpack(tmp_path: Path) -> None:
         "locations": [(1.0, 2.0, 0, 0)],
         "city_place_nodes": [""],
         "city_place_cities": ["Testville"],
-        "trie": {"a": {"$": [0]}},
+        "trie": {"a": {TERMINAL_KEY: [0]}},
     }
     out_path = tmp_path / "trie.msgpack"
 
@@ -87,7 +88,7 @@ def test_write_payload_msgpack(tmp_path: Path) -> None:
         "locations": [[1.0, 2.0, 0, 0]],
         "city_place_nodes": [""],
         "city_place_cities": ["Testville"],
-        "trie": {"a": {"$": [0]}},
+        "trie": {"a": {TERMINAL_KEY: [0]}},
     }
 
 
@@ -109,7 +110,7 @@ def test_pack_trie_binary_format() -> None:
         "locations": [(1.0, 2.0, 0, 0)],
         "city_place_nodes": [""],
         "city_place_cities": ["Testville"],
-        "trie": {"a": {"$": [0]}},
+        "trie": {"a": {TERMINAL_KEY: [0]}},
     }
     data = pack_trie(
         payload["locations"],

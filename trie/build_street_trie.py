@@ -6,6 +6,8 @@ from typing import Dict, Iterable, List, Tuple
 
 import csv
 
+TERMINAL_KEY = "\0"
+
 
 def find_default_csv(folder: Path) -> Path:
     csvs = sorted(folder.glob("*.csv"))
@@ -20,23 +22,23 @@ def insert_trie(trie: Dict, key: str, index: int) -> None:
     node = trie
     for ch in key:
         node = node.setdefault(ch, {})
-    node.setdefault("$", []).append(index)
+    node.setdefault(TERMINAL_KEY, []).append(index)
 
 
 def compress_trie(trie: Dict) -> Dict:
-    terminal = trie.get("$")
+    terminal = trie.get(TERMINAL_KEY)
     compressed: Dict = {}
 
     for key, child in trie.items():
-        if key == "$":
+        if key == TERMINAL_KEY:
             continue
 
         compressed_child = compress_trie(child)
         merged_key = key
 
         while True:
-            child_keys = [k for k in compressed_child.keys() if k != "$"]
-            if "$" not in compressed_child and len(child_keys) == 1:
+            child_keys = [k for k in compressed_child.keys() if k != TERMINAL_KEY]
+            if TERMINAL_KEY not in compressed_child and len(child_keys) == 1:
                 only_key = child_keys[0]
                 merged_key += only_key
                 compressed_child = compressed_child[only_key]
@@ -46,7 +48,7 @@ def compress_trie(trie: Dict) -> Dict:
         compressed[merged_key] = compressed_child
 
     if terminal is not None:
-        compressed["$"] = terminal
+        compressed[TERMINAL_KEY] = terminal
 
     return compressed
 
@@ -127,12 +129,12 @@ def build_nodes(trie: Dict) -> List[Dict]:
         idx = len(nodes)
         nodes.append({"edges": [], "values": []})
 
-        values = node.get("$", [])
+        values = node.get(TERMINAL_KEY, [])
         nodes[idx]["values"] = list(values)
 
         edges = []
         for edge_label, child in node.items():
-            if edge_label == "$":
+            if edge_label == TERMINAL_KEY:
                 continue
             edges.append((edge_label, child))
 
