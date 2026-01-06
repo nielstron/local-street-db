@@ -3,12 +3,33 @@ const resultsEl = document.getElementById("results");
 const searchInput = document.getElementById("search");
 
 const MAX_RESULTS = 80;
+const SHARD_PREFIX_LEN = 3;
+const SHARD_BASE = "street_trie";
+const SHARD_SUFFIX = ".packed";
 let trie = null;
 let locations = [];
 let placeNodes = [];
 let placeCities = [];
 let map = null;
 let markersLayer = null;
+let currentShardKey = null;
+let shardLoadId = 0;
+const shardCache = new Map();
+const shardLoads = new Map();
+
+function shardKeyForPrefix(value) {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return null;
+  const prefix = trimmed.slice(0, SHARD_PREFIX_LEN);
+  let key = "";
+  for (const ch of prefix) {
+    key += /[a-z0-9]/.test(ch) ? ch : "_";
+  }
+  while (key.length < SHARD_PREFIX_LEN) {
+    key += "_";
+  }
+  return key;
+}
 
 function decodeVarint(view, offset) {
   let shift = 0;
@@ -201,6 +222,28 @@ function collectMatches(prefix) {
   return results;
 }
 
+async function loadShard(shardKey) {
+  if (shardCache.has(shardKey)) {
+    return shardCache.get(shardKey);
+  }
+  if (shardLoads.has(shardKey)) {
+    return shardLoads.get(shardKey);
+  }
+  const url = `./${SHARD_BASE}.shard_${shardKey}${SHARD_SUFFIX}`;
+  const loadPromise = fetch(url).then(async (response) => {
+    if (!response.ok) {
+      throw new Error(`Missing shard ${shardKey}`);
+    }
+    const buffer = await response.arrayBuffer();
+    const decoded = decodePackedTrie(buffer);
+    shardCache.set(shardKey, decoded);
+    shardLoads.delete(shardKey);
+    return decoded;
+  });
+  shardLoads.set(shardKey, loadPromise);
+  return loadPromise;
+}
+
 function renderResults(entries) {
   resultsEl.innerHTML = "";
   const limitedEntries = entries.slice(0, MAX_RESULTS);
@@ -244,41 +287,67 @@ function renderResults(entries) {
   return limitedEntries.map((entry) => entry.index);
 }
 
-function updateSearch() {
-  if (!trie) return;
+async function updateSearch() {
   const value = searchInput.value.trim();
   if (!value) {
     resultsEl.textContent = "";
+    statusEl.textContent = "Type 3+ letters to search";
     clearMarkers();
     return;
   }
+  if (value.length < SHARD_PREFIX_LEN) {
+    resultsEl.textContent = "Type at least 3 letters";
+    statusEl.textContent = "Waiting for prefix";
+    clearMarkers();
+    return;
+  }
+  const shardKey = shardKeyForPrefix(value);
+  if (!shardKey) {
+    resultsEl.textContent = "Type at least 3 letters";
+    statusEl.textContent = "Waiting for prefix";
+    clearMarkers();
+    return;
+  }
+
+  if (shardKey !== currentShardKey) {
+    const loadId = ++shardLoadId;
+    statusEl.textContent = `Loading shard ${shardKey}…`;
+    try {
+      const decoded = await loadShard(shardKey);
+      if (loadId !== shardLoadId) return;
+      trie = decoded;
+      locations = decoded.locations;
+      placeNodes = decoded.placeNodes;
+      placeCities = decoded.placeCities;
+      currentShardKey = shardKey;
+      statusEl.textContent = `Loaded shard ${shardKey} (${locations.length} locations)`;
+    } catch (err) {
+      if (loadId !== shardLoadId) return;
+      trie = null;
+      locations = [];
+      placeNodes = [];
+      placeCities = [];
+      currentShardKey = shardKey;
+      resultsEl.textContent = "No matches";
+      statusEl.textContent = `No shard for ${shardKey}`;
+      clearMarkers();
+      return;
+    }
+  }
+
+  if (!trie) return;
   const matches = collectMatches(value.toLowerCase());
   const indices = renderResults(matches);
   addMarkers(indices.slice(0, 500));
 }
 
-async function loadTrie() {
-  statusEl.textContent = "Loading trie…";
-  const response = await fetch("./street_trie.packed");
-  const buffer = await response.arrayBuffer();
-  const decoded = decodePackedTrie(buffer);
-  trie = decoded;
-  locations = decoded.locations;
-  placeNodes = decoded.placeNodes;
-  placeCities = decoded.placeCities;
-  statusEl.textContent = `Loaded ${locations.length} locations`;
-
-  if (locations.length) {
-    map.setView([locations[0][1], locations[0][0]], 12);
-  } else {
-    map.setView([0, 0], 2);
-  }
-}
-
 initMap();
-loadTrie().catch((err) => {
-  statusEl.textContent = "Failed to load trie";
-  console.error(err);
-});
+map.setView([0, 0], 2);
+statusEl.textContent = "Type 3+ letters to load a shard";
 
-searchInput.addEventListener("input", updateSearch);
+searchInput.addEventListener("input", () => {
+  updateSearch().catch((err) => {
+    statusEl.textContent = "Failed to search";
+    console.error(err);
+  });
+});

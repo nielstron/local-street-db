@@ -108,6 +108,92 @@ def build_trie(
     return locations, node_names, city_names, trie
 
 
+def shard_key_for_name(name: str, shard_len: int) -> str | None:
+    if shard_len <= 0:
+        return None
+    trimmed = name.strip().lower()
+    if not trimmed:
+        return None
+    prefix = trimmed[:shard_len]
+    normalized = []
+    for ch in prefix:
+        normalized.append(ch if ch.isascii() and ch.isalnum() else "_")
+    while len(normalized) < shard_len:
+        normalized.append("_")
+    return "".join(normalized)
+
+
+def build_trie_shards(
+    input_path: Path,
+    shard_len: int,
+) -> Dict[str, Dict]:
+    shards: Dict[str, Dict] = {}
+    with input_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        required = {
+            "streetname",
+            "center_lon",
+            "center_lat",
+            "city_place_node",
+            "city_place_city",
+        }
+        if not required.issubset(reader.fieldnames or []):
+            missing = ", ".join(sorted(required - set(reader.fieldnames or [])))
+            raise ValueError(f"missing required CSV columns: {missing}")
+
+        for row in reader:
+            name = (row.get("streetname") or "").strip()
+            if not name:
+                continue
+            shard_key = shard_key_for_name(name, shard_len)
+            if shard_key is None:
+                continue
+            try:
+                lon = float(row["center_lon"])
+                lat = float(row["center_lat"])
+            except (TypeError, ValueError):
+                continue
+
+            shard = shards.get(shard_key)
+            if shard is None:
+                shard = {
+                    "locations": [],
+                    "location_index": {},
+                    "node_names": [""],
+                    "node_index": {"": 0},
+                    "city_names": [""],
+                    "city_index": {"": 0},
+                    "trie": {},
+                }
+                shards[shard_key] = shard
+
+            node = (row.get("city_place_node") or "").strip()
+            if node not in shard["node_index"]:
+                shard["node_index"][node] = len(shard["node_names"])
+                shard["node_names"].append(node)
+            node_idx = shard["node_index"][node]
+
+            city = (row.get("city_place_city") or "").strip()
+            if city not in shard["city_index"]:
+                shard["city_index"][city] = len(shard["city_names"])
+                shard["city_names"].append(city)
+            city_idx = shard["city_index"][city]
+
+            loc_key = (lon, lat)
+            index = shard["location_index"].get(loc_key)
+            if index is None:
+                index = len(shard["locations"])
+                shard["location_index"][loc_key] = index
+                shard["locations"].append((lon, lat, node_idx, city_idx))
+            insert_trie(shard["trie"], name, index)
+
+    for shard in shards.values():
+        shard.pop("location_index", None)
+        shard.pop("node_index", None)
+        shard.pop("city_index", None)
+    return shards
+
+
 def encode_varint(value: int) -> bytes:
     out = bytearray()
     v = value
@@ -254,6 +340,12 @@ def parse_args(argv: Iterable[str] = None) -> argparse.Namespace:
         default="packed",
         help="Output format. Defaults to packed for compact binary output.",
     )
+    parser.add_argument(
+        "--shard-prefix-len",
+        type=int,
+        default=3,
+        help="Shard by this many prefix characters (0 to disable). Defaults to 3.",
+    )
     return parser.parse_args(argv)
 
 
@@ -261,24 +353,55 @@ def main() -> None:
     args = parse_args()
     input_path = args.input if args.input else find_default_csv(Path.cwd())
     print(f"Building trie from {input_path}")
-    locations, node_names, city_names, trie = build_trie(input_path)
-    print(
-        "Loaded "
-        f"{len(locations)} locations, "
-        f"{len(node_names)} nodes, "
-        f"{len(city_names)} cities"
-    )
-    print("Compressing trie edges")
-    trie = compress_trie(trie)
-    print("Packing trie payload")
-    payload = {
-        "locations": locations,
-        "city_place_nodes": node_names,
-        "city_place_cities": city_names,
-        "trie": trie,
-    }
-    print(f"Writing output to {args.output} ({args.format})")
-    write_payload(payload, args.output, args.format)
+    if args.shard_prefix_len > 0:
+        print(f"Sharding trie by first {args.shard_prefix_len} characters")
+        shards = build_trie_shards(input_path, args.shard_prefix_len)
+        print(f"Built {len(shards)} shards")
+        output_base = args.output
+        if output_base.suffix:
+            output_base = output_base.with_suffix("")
+        for shard_key in sorted(shards.keys()):
+            shard = shards[shard_key]
+            print(
+                "Loaded shard "
+                f"{shard_key}: "
+                f"{len(shard['locations'])} locations, "
+                f"{len(shard['node_names'])} nodes, "
+                f"{len(shard['city_names'])} cities"
+            )
+            print(f"Compressing shard {shard_key}")
+            shard_trie = compress_trie(shard["trie"])
+            print(f"Packing shard {shard_key}")
+            payload = {
+                "locations": shard["locations"],
+                "city_place_nodes": shard["node_names"],
+                "city_place_cities": shard["city_names"],
+                "trie": shard_trie,
+            }
+            shard_output = output_base.parent / (
+                f"{output_base.name}.shard_{shard_key}.packed"
+            )
+            print(f"Writing shard {shard_key} to {shard_output} ({args.format})")
+            write_payload(payload, shard_output, args.format)
+    else:
+        locations, node_names, city_names, trie = build_trie(input_path)
+        print(
+            "Loaded "
+            f"{len(locations)} locations, "
+            f"{len(node_names)} nodes, "
+            f"{len(city_names)} cities"
+        )
+        print("Compressing trie edges")
+        trie = compress_trie(trie)
+        print("Packing trie payload")
+        payload = {
+            "locations": locations,
+            "city_place_nodes": node_names,
+            "city_place_cities": city_names,
+            "trie": trie,
+        }
+        print(f"Writing output to {args.output} ({args.format})")
+        write_payload(payload, args.output, args.format)
     print("Done")
 
 
