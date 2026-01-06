@@ -82,9 +82,13 @@ def test_extract_to_csv(tmp_path: Path) -> None:
         "city_addr",
         "city_place",
     ]
-    # Two names for the closed way, one entry per name.
     names = [row[0] for row in rows[1:]]
-    assert names == ["Main Street", "Old Main"]
+    assert names == ["Main Street", "Old Main", "Open Way"]
+
+    rows_by_name = {row[0]: row for row in rows[1:]}
+    open_row = rows_by_name["Open Way"]
+    assert open_row[1] == "0.0000000"
+    assert open_row[2] == "2.0000000"
 
 
 def test_extract_to_csv_splits_multi_names(tmp_path: Path) -> None:

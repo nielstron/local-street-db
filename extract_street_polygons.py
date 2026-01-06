@@ -69,6 +69,37 @@ def polygon_centroid(coords: List[Tuple[float, float]]) -> Tuple[float, float]:
     return cx, cy
 
 
+def line_midpoint(coords: List[Tuple[float, float]]) -> Tuple[float, float]:
+    if len(coords) < 2:
+        raise ValueError("line must have at least 2 points")
+
+    total = 0.0
+    segments: List[Tuple[float, float, float, float, float]] = []
+    for i in range(len(coords) - 1):
+        x0, y0 = coords[i]
+        x1, y1 = coords[i + 1]
+        dx = x1 - x0
+        dy = y1 - y0
+        seg_len = (dx * dx + dy * dy) ** 0.5
+        segments.append((x0, y0, x1, y1, seg_len))
+        total += seg_len
+
+    if total == 0.0:
+        avg_x = sum(p[0] for p in coords) / len(coords)
+        avg_y = sum(p[1] for p in coords) / len(coords)
+        return avg_x, avg_y
+
+    halfway = total / 2.0
+    acc = 0.0
+    for x0, y0, x1, y1, seg_len in segments:
+        if acc + seg_len >= halfway:
+            t = (halfway - acc) / seg_len
+            return x0 + (x1 - x0) * t, y0 + (y1 - y0) * t
+        acc += seg_len
+
+    return coords[-1]
+
+
 class StreetPolygonHandler(osmium.SimpleHandler):
     def __init__(self, writer: csv.writer):
         super().__init__()
@@ -82,22 +113,26 @@ class StreetPolygonHandler(osmium.SimpleHandler):
         if not names:
             return
 
-        if not w.is_closed():
-            return
-
         coords = []
         for node in w.nodes:
             if not node.location.valid():
                 return
             coords.append((node.location.lon, node.location.lat))
 
-        if len(coords) < 4:
-            return
-
-        try:
-            center_lon, center_lat = polygon_centroid(coords)
-        except ValueError:
-            return
+        if w.is_closed():
+            if len(coords) < 4:
+                return
+            try:
+                center_lon, center_lat = polygon_centroid(coords)
+            except ValueError:
+                return
+        else:
+            if len(coords) < 2:
+                return
+            try:
+                center_lon, center_lat = line_midpoint(coords)
+            except ValueError:
+                return
 
         city_addr = w.tags.get("addr:city")
         city_place = w.tags.get("addr:place")
