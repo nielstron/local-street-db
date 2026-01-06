@@ -187,11 +187,7 @@ fn place_node_from_tags(tags: &Tags, coord: (f64, f64)) -> Option<PlaceNode> {
     }
     let name = tags.get("name")?.to_string();
     let place_type = tags.get("place")?.to_string();
-    Some(PlaceNode {
-        name,
-        place_type,
-        coord,
-    })
+    Some(PlaceNode::new(name, place_type, coord))
 }
 
 fn is_city_or_town(place_type: &str) -> bool {
@@ -224,6 +220,13 @@ fn path_length_km(coords: &[(f64, f64)]) -> f64 {
 }
 
 const MAX_PLACE_DISTANCE_KM: f64 = 75.0;
+const EARTH_RADIUS_KM: f64 = 6371.0;
+
+#[derive(Copy, Clone)]
+enum PlaceFilter {
+    Any,
+    CityTown,
+}
 
 struct PlaceIndex {
     places: Vec<PlaceNode>,
@@ -245,35 +248,12 @@ impl PlaceIndex {
         }
     }
 
-    fn nearest(&self, point: (f64, f64), allowed: Option<&[&str]>) -> Option<&PlaceNode> {
-        let mut best: Option<(&PlaceNode, f64)> = None;
-        for idx in self.candidates(point) {
-            let place = &self.places[idx];
-            if let Some(allowed) = allowed {
-                if !allowed.contains(&place.place_type.as_str()) {
-                    continue;
-                }
-            }
-            let distance = haversine_km(point, place.coord);
-            if distance > MAX_PLACE_DISTANCE_KM {
-                continue;
-            }
-            match best {
-                None => best = Some((place, distance)),
-                Some((_, best_distance)) if distance < best_distance => {
-                    best = Some((place, distance))
-                }
-                _ => {}
-            }
-        }
-        best.map(|(place, _)| place)
-    }
-
-    fn candidates(&self, point: (f64, f64)) -> Vec<usize> {
+    fn nearest(&self, point: (f64, f64), filter: PlaceFilter) -> Option<&PlaceNode> {
         let (lon, lat) = point;
+        let lat_rad = lat.to_radians();
+        let lon_rad = lon.to_radians();
+        let cos_lat = lat_rad.cos().abs();
         let delta_lat = MAX_PLACE_DISTANCE_KM / 111.0;
-        let lat_rad = lat.to_radians().abs();
-        let cos_lat = lat_rad.cos();
         let delta_lon = if cos_lat < 1e-6 {
             180.0
         } else {
@@ -282,15 +262,39 @@ impl PlaceIndex {
 
         let min_cell = Self::cell_for((lon - delta_lon, lat - delta_lat), self.cell_size_deg);
         let max_cell = Self::cell_for((lon + delta_lon, lat + delta_lat), self.cell_size_deg);
-        let mut indices = Vec::new();
+        let mut best: Option<(&PlaceNode, f64)> = None;
         for x in min_cell.0..=max_cell.0 {
             for y in min_cell.1..=max_cell.1 {
-                if let Some(bucket) = self.grid.get(&(x, y)) {
-                    indices.extend(bucket.iter().copied());
+                let Some(bucket) = self.grid.get(&(x, y)) else {
+                    continue;
+                };
+                for &idx in bucket {
+                    let place = &self.places[idx];
+                    if matches!(filter, PlaceFilter::CityTown) && !place.is_city_town {
+                        continue;
+                    }
+                    let distance = equirectangular_km(
+                        lon_rad,
+                        lat_rad,
+                        cos_lat,
+                        place.lon_rad,
+                        place.lat_rad,
+                        place.cos_lat,
+                    );
+                    if distance > MAX_PLACE_DISTANCE_KM {
+                        continue;
+                    }
+                    match best {
+                        None => best = Some((place, distance)),
+                        Some((_, best_distance)) if distance < best_distance => {
+                            best = Some((place, distance))
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
-        indices
+        best.map(|(place, _)| place)
     }
 
     fn cell_for(coord: (f64, f64), cell_size_deg: f64) -> (i32, i32) {
@@ -298,6 +302,20 @@ impl PlaceIndex {
         let y = (coord.1 / cell_size_deg).floor() as i32;
         (x, y)
     }
+}
+
+fn equirectangular_km(
+    lon1: f64,
+    lat1: f64,
+    cos_lat1: f64,
+    lon2: f64,
+    lat2: f64,
+    cos_lat2: f64,
+) -> f64 {
+    let avg_cos = (cos_lat1 + cos_lat2) * 0.5;
+    let x = (lon2 - lon1) * avg_cos;
+    let y = lat2 - lat1;
+    EARTH_RADIUS_KM * (x * x + y * y).sqrt()
 }
 
 fn is_in_city(tags: &Tags) -> Option<String> {
@@ -351,6 +369,28 @@ struct PlaceNode {
     name: String,
     place_type: String,
     coord: (f64, f64),
+    lat_rad: f64,
+    lon_rad: f64,
+    cos_lat: f64,
+    is_city_town: bool,
+}
+
+impl PlaceNode {
+    fn new(name: String, place_type: String, coord: (f64, f64)) -> Self {
+        let lat_rad = coord.1.to_radians();
+        let lon_rad = coord.0.to_radians();
+        let cos_lat = lat_rad.cos();
+        let is_city_town = is_city_or_town(&place_type);
+        Self {
+            name,
+            place_type,
+            coord,
+            lat_rad,
+            lon_rad,
+            cos_lat,
+            is_city_town,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -693,13 +733,13 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
         let city_place = way.tags.get("addr:place");
         let city = city_addr.or(city_place);
         let city_boundary: Option<String> = None;
-        let place_match = place_index.nearest((center_lon, center_lat), None);
+        let place_match = place_index.nearest((center_lon, center_lat), PlaceFilter::Any);
         let city_place_node = place_match.as_ref().map(|place| place.name.clone());
         let city_place_type = place_match.as_ref().map(|place| place.place_type.clone());
         let city_place_city = match place_match.as_ref() {
             Some(place) if is_city_or_town(&place.place_type) => Some(place.name.clone()),
             Some(_) => place_index
-                .nearest((center_lon, center_lat), Some(&["city", "town"]))
+                .nearest((center_lon, center_lat), PlaceFilter::CityTown)
                 .map(|place| place.name.clone()),
             None => None,
         };
@@ -826,13 +866,13 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
         let city_place = way.tags.get("addr:place");
         let city = city_addr.or(city_place);
         let city_boundary: Option<String> = None;
-        let place_match = place_index.nearest((center_lon, center_lat), None);
+        let place_match = place_index.nearest((center_lon, center_lat), PlaceFilter::Any);
         let city_place_node = place_match.as_ref().map(|place| place.name.clone());
         let city_place_type = place_match.as_ref().map(|place| place.place_type.clone());
         let city_place_city = match place_match.as_ref() {
             Some(place) if is_city_or_town(&place.place_type) => Some(place.name.clone()),
             Some(_) => place_index
-                .nearest((center_lon, center_lat), Some(&["city", "town"]))
+                .nearest((center_lon, center_lat), PlaceFilter::CityTown)
                 .map(|place| place.name.clone()),
             None => None,
         };
@@ -1113,26 +1153,20 @@ mod tests {
     #[test]
     fn place_index_picks_nearest_and_filters() {
         let places = vec![
-            PlaceNode {
-                name: "Near".to_string(),
-                place_type: "town".to_string(),
-                coord: (0.0, 0.0),
-            },
-            PlaceNode {
-                name: "Far".to_string(),
-                place_type: "hamlet".to_string(),
-                coord: (5.0, 5.0),
-            },
+            PlaceNode::new("Near".to_string(), "town".to_string(), (0.0, 0.0)),
+            PlaceNode::new("Far".to_string(), "hamlet".to_string(), (5.0, 5.0)),
         ];
         let index = PlaceIndex::new(places, 1.0);
 
-        let nearest = index.nearest((0.1, 0.1), None).unwrap();
+        let nearest = index
+            .nearest((0.1, 0.1), PlaceFilter::Any)
+            .unwrap();
         assert_eq!(nearest.name, "Near");
 
         let filtered = index
-            .nearest((0.1, 0.1), Some(&["city"]))
+            .nearest((0.1, 0.1), PlaceFilter::CityTown)
             .map(|place| place.name.clone());
-        assert_eq!(filtered, None);
+        assert_eq!(filtered.as_deref(), Some("Near"));
     }
 
     #[test]
