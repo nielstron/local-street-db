@@ -344,6 +344,88 @@ fn resolve_first_non_empty(values: &[Option<&str>]) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+fn has_tag_value(tags: &Tags, key: &str, values: &[&str]) -> bool {
+    tags.get(key)
+        .map(|value| values.contains(&value.as_str()))
+        .unwrap_or(false)
+}
+
+fn has_tag(tags: &Tags, key: &str) -> bool {
+    tags.get(key).map(|value| !value.is_empty()).unwrap_or(false)
+}
+
+fn is_airport(tags: &Tags) -> bool {
+    has_tag_value(tags, "aeroway", &["aerodrome", "airport", "terminal"])
+}
+
+fn is_train_station(tags: &Tags) -> bool {
+    has_tag_value(tags, "railway", &["station", "halt"])
+        || has_tag_value(tags, "public_transport", &["station"])
+}
+
+fn is_bus_stop(tags: &Tags) -> bool {
+    has_tag_value(tags, "highway", &["bus_stop"])
+        || has_tag_value(tags, "public_transport", &["platform", "stop_position"])
+}
+
+fn is_major_sight(tags: &Tags) -> bool {
+    if !has_name_tags(tags) {
+        return false;
+    }
+    let has_wiki = tags.contains_key("wikipedia") || tags.contains_key("wikidata");
+    if !has_wiki {
+        return false;
+    }
+    let has_tourism = has_tag(tags, "tourism");
+    let has_historic = has_tag(tags, "historic");
+    let has_man_made = has_tag(tags, "man_made");
+    let has_landmark = has_tag(tags, "landmark");
+    let has_tower = has_tag(tags, "tower:type");
+    has_tourism || has_historic || has_man_made || has_landmark || has_tower
+}
+
+fn is_poi(tags: &Tags) -> bool {
+    if !has_name_tags(tags) {
+        return false;
+    }
+    is_airport(tags) || is_train_station(tags) || is_bus_stop(tags) || is_major_sight(tags)
+}
+
+fn resolve_city_fields(
+    tags: &Tags,
+    center: (f64, f64),
+    place_index: &PlaceIndex,
+) -> (String, String, String, String) {
+    let city_addr = tags.get("addr:city");
+    let city_place = tags.get("addr:place");
+    let city = city_addr.or(city_place);
+    let city_boundary: Option<String> = None;
+    let place_match = place_index.nearest(center, PlaceFilter::Any);
+    let city_place_node = place_match.as_ref().map(|place| place.name.clone());
+    let city_place_type = place_match.as_ref().map(|place| place.place_type.clone());
+    let city_place_city = match place_match.as_ref() {
+        Some(place) if is_city_or_town(&place.place_type) => Some(place.name.clone()),
+        Some(_) => place_index
+            .nearest(center, PlaceFilter::CityTown)
+            .map(|place| place.name.clone()),
+        None => None,
+    };
+    let city_is_in = is_in_city(tags);
+    let city_resolved = resolve_first_non_empty(&[
+        city.map(|value| value.as_str()),
+        city_boundary.as_deref(),
+        city_is_in.as_deref(),
+        city_place_city.as_deref(),
+        city_place_node.as_deref(),
+    ]);
+    (
+        city_place_node.unwrap_or_default(),
+        city_place_type.unwrap_or_default(),
+        city_place_city.unwrap_or_default(),
+        city_resolved.unwrap_or_default(),
+    )
+}
+
 
 fn collect_pbf_place_nodes(objs: &BTreeMap<OsmId, OsmObj>) -> Vec<PlaceNode> {
     let mut places = Vec::new();
@@ -551,6 +633,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
     let mut nodes: HashMap<i64, (f64, f64)> = HashMap::new();
     let mut ways: Vec<WayData> = Vec::new();
     let mut place_nodes: Vec<PlaceNode> = Vec::new();
+    let mut poi_nodes: Vec<NodeData> = Vec::new();
     let mut current_node: Option<NodeData> = None;
     let mut current_way: Option<WayData> = None;
     let mut buf = Vec::new();
@@ -671,6 +754,9 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
                             if let Some(place_node) = place_node_from_tags(&node.tags, coord) {
                                 place_nodes.push(place_node);
                             }
+                            if is_poi(&node.tags) {
+                                poi_nodes.push(node);
+                            }
                         }
                     }
                 } else if e.name().as_ref() == b"way" {
@@ -686,8 +772,34 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
 
     let place_index = PlaceIndex::new(place_nodes, 1.0);
     let mut entries: Vec<StreetEntry> = Vec::new();
+    for node in poi_nodes {
+        let coord = match node.coord {
+            Some(coord) => coord,
+            None => continue,
+        };
+        let names = collect_names(&node.tags);
+        if names.is_empty() {
+            continue;
+        }
+        let (city_place_node, city_place_type, city_place_city, city_resolved) =
+            resolve_city_fields(&node.tags, coord, &place_index);
+        for name in names {
+            entries.push(StreetEntry {
+                name,
+                center_lon: coord.0,
+                center_lat: coord.1,
+                length_km: 0.0,
+                city_place_node: city_place_node.clone(),
+                city_place_type: city_place_type.clone(),
+                city_place_city: city_place_city.clone(),
+                city_resolved: city_resolved.clone(),
+            });
+        }
+    }
     for way in ways {
-        if !way.tags.contains_key("highway") || !has_name_tags(&way.tags) {
+        let is_street = way.tags.contains_key("highway") && has_name_tags(&way.tags);
+        let is_poi_way = is_poi(&way.tags);
+        if !is_street && !is_poi_way {
             continue;
         }
 
@@ -729,39 +841,19 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
             }
         };
 
-        let city_addr = way.tags.get("addr:city");
-        let city_place = way.tags.get("addr:place");
-        let city = city_addr.or(city_place);
-        let city_boundary: Option<String> = None;
-        let place_match = place_index.nearest((center_lon, center_lat), PlaceFilter::Any);
-        let city_place_node = place_match.as_ref().map(|place| place.name.clone());
-        let city_place_type = place_match.as_ref().map(|place| place.place_type.clone());
-        let city_place_city = match place_match.as_ref() {
-            Some(place) if is_city_or_town(&place.place_type) => Some(place.name.clone()),
-            Some(_) => place_index
-                .nearest((center_lon, center_lat), PlaceFilter::CityTown)
-                .map(|place| place.name.clone()),
-            None => None,
-        };
-        let city_is_in = is_in_city(&way.tags);
-        let city_resolved = resolve_first_non_empty(&[
-            city.map(|value| value.as_str()),
-            city_boundary.as_deref(),
-            city_is_in.as_deref(),
-            city_place_city.as_deref(),
-            city_place_node.as_deref(),
-        ]);
-        let length_km = path_length_km(&coords);
+        let (city_place_node, city_place_type, city_place_city, city_resolved) =
+            resolve_city_fields(&way.tags, (center_lon, center_lat), &place_index);
+        let length_km = if is_street { path_length_km(&coords) } else { 0.0 };
         for name in names {
             entries.push(StreetEntry {
                 name,
                 center_lon,
                 center_lat,
                 length_km,
-                city_place_node: city_place_node.clone().unwrap_or_default(),
-                city_place_type: city_place_type.clone().unwrap_or_default(),
-                city_place_city: city_place_city.clone().unwrap_or_default(),
-                city_resolved: city_resolved.clone().unwrap_or_default(),
+                city_place_node: city_place_node.clone(),
+                city_place_type: city_place_type.clone(),
+                city_place_city: city_place_city.clone(),
+                city_resolved: city_resolved.clone(),
             });
         }
     }
@@ -804,8 +896,10 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
     let mut pbf = OsmPbfReader::new(file);
 
     let objs = pbf.get_objs_and_deps(|obj| match obj {
-        OsmObj::Way(w) => w.tags.contains_key("highway") && has_name_tags(&w.tags),
-        OsmObj::Node(n) => is_place_node(&n.tags),
+        OsmObj::Way(w) => {
+            (w.tags.contains_key("highway") && has_name_tags(&w.tags)) || is_poi(&w.tags)
+        }
+        OsmObj::Node(n) => is_place_node(&n.tags) || is_poi(&n.tags),
         OsmObj::Relation(_) => false,
     })?;
     let place_nodes = collect_pbf_place_nodes(&objs);
@@ -813,89 +907,96 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
 
     let mut entries: Vec<StreetEntry> = Vec::new();
     for obj in objs.values() {
-        let way = match obj {
-            OsmObj::Way(w) => w,
-            _ => continue,
-        };
-        if !way.tags.contains_key("highway") || !has_name_tags(&way.tags) {
-            continue;
-        }
-
-        let names = collect_names(&way.tags);
-        if names.is_empty() {
-            continue;
-        }
-
-        let mut coords = Vec::with_capacity(way.nodes.len());
-        let mut valid = true;
-        for node_id in &way.nodes {
-            match objs.get(&OsmId::Node(node_id.clone())) {
-                Some(OsmObj::Node(node)) => {
-                    coords.push((node.lon(), node.lat()));
+        match obj {
+            OsmObj::Way(way) => {
+                let is_street = way.tags.contains_key("highway") && has_name_tags(&way.tags);
+                let is_poi_way = is_poi(&way.tags);
+                if !is_street && !is_poi_way {
+                    continue;
                 }
-                _ => {
-                    valid = false;
-                    break;
+
+                let names = collect_names(&way.tags);
+                if names.is_empty() {
+                    continue;
+                }
+
+                let mut coords = Vec::with_capacity(way.nodes.len());
+                let mut valid = true;
+                for node_id in &way.nodes {
+                    match objs.get(&OsmId::Node(node_id.clone())) {
+                        Some(OsmObj::Node(node)) => {
+                            coords.push((node.lon(), node.lat()));
+                        }
+                        _ => {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+                if !valid {
+                    continue;
+                }
+
+                let is_closed = way.nodes.len() >= 2 && way.nodes.first() == way.nodes.last();
+                let (center_lon, center_lat) = if is_closed {
+                    if coords.len() < 4 {
+                        continue;
+                    }
+                    match polygon_centroid(&coords) {
+                        Ok(value) => value,
+                        Err(_) => continue,
+                    }
+                } else {
+                    if coords.len() < 2 {
+                        continue;
+                    }
+                    match line_midpoint(&coords) {
+                        Ok(value) => value,
+                        Err(_) => continue,
+                    }
+                };
+
+                let (city_place_node, city_place_type, city_place_city, city_resolved) =
+                    resolve_city_fields(&way.tags, (center_lon, center_lat), &place_index);
+                let length_km = if is_street { path_length_km(&coords) } else { 0.0 };
+                for name in names {
+                    entries.push(StreetEntry {
+                        name,
+                        center_lon,
+                        center_lat,
+                        length_km,
+                        city_place_node: city_place_node.clone(),
+                        city_place_type: city_place_type.clone(),
+                        city_place_city: city_place_city.clone(),
+                        city_resolved: city_resolved.clone(),
+                    });
                 }
             }
-        }
-        if !valid {
-            continue;
-        }
-
-        let is_closed = way.nodes.len() >= 2 && way.nodes.first() == way.nodes.last();
-        let (center_lon, center_lat) = if is_closed {
-            if coords.len() < 4 {
-                continue;
+            OsmObj::Node(node) => {
+                if !is_poi(&node.tags) {
+                    continue;
+                }
+                let names = collect_names(&node.tags);
+                if names.is_empty() {
+                    continue;
+                }
+                let center = (node.lon(), node.lat());
+                let (city_place_node, city_place_type, city_place_city, city_resolved) =
+                    resolve_city_fields(&node.tags, center, &place_index);
+                for name in names {
+                    entries.push(StreetEntry {
+                        name,
+                        center_lon: center.0,
+                        center_lat: center.1,
+                        length_km: 0.0,
+                        city_place_node: city_place_node.clone(),
+                        city_place_type: city_place_type.clone(),
+                        city_place_city: city_place_city.clone(),
+                        city_resolved: city_resolved.clone(),
+                    });
+                }
             }
-            match polygon_centroid(&coords) {
-                Ok(value) => value,
-                Err(_) => continue,
-            }
-        } else {
-            if coords.len() < 2 {
-                continue;
-            }
-            match line_midpoint(&coords) {
-                Ok(value) => value,
-                Err(_) => continue,
-            }
-        };
-
-        let city_addr = way.tags.get("addr:city");
-        let city_place = way.tags.get("addr:place");
-        let city = city_addr.or(city_place);
-        let city_boundary: Option<String> = None;
-        let place_match = place_index.nearest((center_lon, center_lat), PlaceFilter::Any);
-        let city_place_node = place_match.as_ref().map(|place| place.name.clone());
-        let city_place_type = place_match.as_ref().map(|place| place.place_type.clone());
-        let city_place_city = match place_match.as_ref() {
-            Some(place) if is_city_or_town(&place.place_type) => Some(place.name.clone()),
-            Some(_) => place_index
-                .nearest((center_lon, center_lat), PlaceFilter::CityTown)
-                .map(|place| place.name.clone()),
-            None => None,
-        };
-        let city_is_in = is_in_city(&way.tags);
-        let city_resolved = resolve_first_non_empty(&[
-            city.map(|value| value.as_str()),
-            city_boundary.as_deref(),
-            city_is_in.as_deref(),
-            city_place_city.as_deref(),
-            city_place_node.as_deref(),
-        ]);
-        let length_km = path_length_km(&coords);
-        for name in names {
-            entries.push(StreetEntry {
-                name,
-                center_lon,
-                center_lat,
-                length_km,
-                city_place_node: city_place_node.clone().unwrap_or_default(),
-                city_place_type: city_place_type.clone().unwrap_or_default(),
-                city_place_city: city_place_city.clone().unwrap_or_default(),
-                city_resolved: city_resolved.clone().unwrap_or_default(),
-            });
+            _ => {}
         }
     }
 
@@ -1123,6 +1224,32 @@ mod tests {
 </osm>
 "#;
 
+    const OSM_POI: &str = r#"<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6" generator="test">
+  <node id="1" lat="48.8584" lon="2.2945">
+    <tag k="name" v="Eiffel Tower" />
+    <tag k="tourism" v="attraction" />
+    <tag k="wikipedia" v="en:Eiffel_Tower" />
+  </node>
+  <node id="2" lat="48.0" lon="2.0">
+    <tag k="name" v="Local Statue" />
+    <tag k="tourism" v="attraction" />
+  </node>
+  <node id="3" lat="40.0" lon="-73.0">
+    <tag k="name" v="Central Station" />
+    <tag k="railway" v="station" />
+  </node>
+  <node id="4" lat="41.0" lon="-74.0">
+    <tag k="name" v="Main Bus Stop" />
+    <tag k="highway" v="bus_stop" />
+  </node>
+  <node id="5" lat="42.0" lon="-75.0">
+    <tag k="name" v="City Airport" />
+    <tag k="aeroway" v="aerodrome" />
+  </node>
+</osm>
+"#;
+
     #[test]
     fn split_and_collect_names() {
         let mut tags = Tags::new();
@@ -1300,5 +1427,36 @@ mod tests {
 
         let lat: f64 = data_rows[0][2].parse().unwrap();
         assert!((lat - 0.001).abs() < 1e-9);
+    }
+
+    #[test]
+    fn extract_to_csv_includes_poi_and_filters_minor_sights() {
+        let dir = tempdir().unwrap();
+        let osm_path = dir.path().join("poi.osm");
+        let out_path = dir.path().join("out.csv");
+        std::fs::write(&osm_path, OSM_POI).unwrap();
+
+        extract_to_csv(&osm_path, &out_path).unwrap();
+
+        let mut reader = ReaderBuilder::new()
+            .has_headers(false)
+            .from_path(&out_path)
+            .unwrap();
+        let mut names: Vec<String> = reader
+            .records()
+            .skip(1)
+            .map(|row| row.unwrap()[0].to_string())
+            .collect();
+        names.sort();
+        let expected: Vec<String> = vec![
+            "Central Station",
+            "City Airport",
+            "Eiffel Tower",
+            "Main Bus Stop",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(names, expected);
     }
 }
