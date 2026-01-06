@@ -121,7 +121,7 @@ def test_pack_trie_binary_format() -> None:
     )
 
     assert data[:4] == b"STRI"
-    assert data[4] == 3
+    assert data[4] == 4
     scale = int.from_bytes(data[5:9], "little", signed=True)
     assert scale == 10_000_000
     offset = 9
@@ -152,15 +152,20 @@ def test_pack_trie_binary_format() -> None:
     assert node_idx == 0
     assert city_idx == 0
 
+    label_count, offset = decode_varint(data, offset)
+    assert label_count == 1
+    label_len, offset = decode_varint(data, offset)
+    label = data[offset : offset + label_len].decode("utf-8")
+    offset += label_len
+    assert label == "a"
+
     trie_node_count, offset = decode_varint(data, offset)
     assert trie_node_count == 2
 
     edge_count, offset = decode_varint(data, offset)
     assert edge_count == 1
-    label_len, offset = decode_varint(data, offset)
-    label = data[offset : offset + label_len].decode("utf-8")
-    offset += label_len
-    assert label == "a"
+    label_idx, offset = decode_varint(data, offset)
+    assert label_idx == 0
     child_idx, offset = decode_varint(data, offset)
     assert child_idx == 1
 

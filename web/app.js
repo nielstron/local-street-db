@@ -34,7 +34,7 @@ function decodePackedTrie(buffer) {
     throw new Error("Invalid trie file");
   }
   const version = view.getUint8(4);
-  if (version !== 3) {
+  if (version !== 3 && version !== 4) {
     throw new Error(`Unsupported version ${version}`);
   }
   const scale = view.getInt32(5, true);
@@ -78,6 +78,21 @@ function decodePackedTrie(buffer) {
     locs[i] = [lon / scale, lat / scale, nodeIdx, cityIdx];
   }
 
+  let labelTable = null;
+  if (version === 4) {
+    let labelCount;
+    [labelCount, offset] = decodeVarint(view, offset);
+    labelTable = new Array(labelCount);
+    for (let i = 0; i < labelCount; i++) {
+      let labelLen;
+      [labelLen, offset] = decodeVarint(view, offset);
+      const bytes = new Uint8Array(buffer, offset, labelLen);
+      const label = new TextDecoder("utf-8").decode(bytes);
+      offset += labelLen;
+      labelTable[i] = label;
+    }
+  }
+
   let nodeCount;
   [nodeCount, offset] = decodeVarint(view, offset);
   const nodes = new Array(nodeCount);
@@ -86,11 +101,18 @@ function decodePackedTrie(buffer) {
     [edgeCount, offset] = decodeVarint(view, offset);
     const edges = [];
     for (let e = 0; e < edgeCount; e++) {
-      let labelLen;
-      [labelLen, offset] = decodeVarint(view, offset);
-      const bytes = new Uint8Array(buffer, offset, labelLen);
-      const label = new TextDecoder("utf-8").decode(bytes);
-      offset += labelLen;
+      let label;
+      if (version === 4) {
+        let labelIdx;
+        [labelIdx, offset] = decodeVarint(view, offset);
+        label = labelTable[labelIdx] || "";
+      } else {
+        let labelLen;
+        [labelLen, offset] = decodeVarint(view, offset);
+        const bytes = new Uint8Array(buffer, offset, labelLen);
+        label = new TextDecoder("utf-8").decode(bytes);
+        offset += labelLen;
+      }
       let childIdx;
       [childIdx, offset] = decodeVarint(view, offset);
       edges.push({ label, child: childIdx });

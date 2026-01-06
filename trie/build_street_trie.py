@@ -154,11 +154,11 @@ def pack_trie(
     node_names: List[str],
     city_names: List[str],
     trie: Dict,
-    scale: int = 10_000_000,
+    scale: int = 1_000_000,
 ) -> bytes:
     out = bytearray()
     out.extend(b"STRI")
-    out.append(3)
+    out.append(4)
     out.extend(scale.to_bytes(4, "little", signed=True))
 
     out.extend(encode_varint(len(node_names)))
@@ -183,14 +183,20 @@ def pack_trie(
         out.extend(encode_varint(city_idx))
 
     nodes = build_nodes(trie)
+    labels = sorted({label for node in nodes for label, _ in node["edges"]})
+    label_index = {label: idx for idx, label in enumerate(labels)}
+    out.extend(encode_varint(len(labels)))
+    for label in labels:
+        label_bytes = label.encode("utf-8")
+        out.extend(encode_varint(len(label_bytes)))
+        out.extend(label_bytes)
+
     out.extend(encode_varint(len(nodes)))
     for node in nodes:
         edges = node["edges"]
         out.extend(encode_varint(len(edges)))
         for label, child_idx in edges:
-            label_bytes = label.encode("utf-8")
-            out.extend(encode_varint(len(label_bytes)))
-            out.extend(label_bytes)
+            out.extend(encode_varint(label_index[label]))
             out.extend(encode_varint(child_idx))
 
         values = node["values"]
@@ -254,15 +260,26 @@ def parse_args(argv: Iterable[str] = None) -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     input_path = args.input if args.input else find_default_csv(Path.cwd())
+    print(f"Building trie from {input_path}")
     locations, node_names, city_names, trie = build_trie(input_path)
+    print(
+        "Loaded "
+        f"{len(locations)} locations, "
+        f"{len(node_names)} nodes, "
+        f"{len(city_names)} cities"
+    )
+    print("Compressing trie edges")
     trie = compress_trie(trie)
+    print("Packing trie payload")
     payload = {
         "locations": locations,
         "city_place_nodes": node_names,
         "city_place_cities": city_names,
         "trie": trie,
     }
+    print(f"Writing output to {args.output} ({args.format})")
     write_payload(payload, args.output, args.format)
+    print("Done")
 
 
 if __name__ == "__main__":
