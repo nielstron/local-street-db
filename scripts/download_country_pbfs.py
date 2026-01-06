@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download country-level OSM PBF extracts into pbfs/countries."""
+"""Download country-level OSM PBF extracts into pbfs."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import urllib.request
 from pypdl import Pypdl
 
 DEFAULT_BASE_URL = "https://download.openstreetmap.fr/extracts/"
-DEFAULT_OUT_DIR = os.path.join("pbfs", "countries")
+DEFAULT_OUT_DIR = "pbfs"
 
 
 class _LinkParser(html.parser.HTMLParser):
@@ -67,7 +67,7 @@ def _list_continent_dirs(base_url: str) -> list[str]:
 def _filter_country_pbfs(continent_url: str, links: list[str]) -> list[tuple[str, str]]:
     pbfs: list[tuple[str, str]] = []
     for href in links:
-        if not href.endswith(".osm.pbf"):
+        if not href.endswith("-latest.osm.pbf"):
             continue
         if "/" in href:
             continue
@@ -119,24 +119,24 @@ def download_country_pbfs(
 ) -> list[str]:
     os.makedirs(out_dir, exist_ok=True)
     downloaded: list[str] = []
+    tasks: list[tuple[str, str]] = []
     for continent_url in _list_continent_dirs(base_url):
-        tasks: list[tuple[str, str]] = []
         for file_url, filename in _list_country_pbfs(continent_url):
             dest_path = os.path.join(out_dir, filename)
             tasks.append((file_url, dest_path))
             downloaded.append(dest_path)
-        _download_files_parallel(
-            tasks,
-            force=force,
-            max_concurrent=max_concurrent,
-            segments=segments,
-        )
+    _download_files_parallel(
+        tasks,
+        force=force,
+        max_concurrent=max_concurrent,
+        segments=segments,
+    )
     return downloaded
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="Download country-level OSM PBF extracts into pbfs/countries.",
+        description="Download country-level OSM PBF extracts into pbfs.",
     )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
