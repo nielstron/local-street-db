@@ -5,7 +5,10 @@ const searchInput = document.getElementById("search");
 const MAX_RESULTS = 80;
 const SHARD_PREFIX_LEN = 3;
 const SHARD_BASE = "street_trie";
-const SHARD_DIR = "/build/shards";
+const isLocalhost =
+  window.location.hostname === "localhost" ||
+  window.location.hostname === "127.0.0.1";
+const SHARD_DIR = isLocalhost ? "/build/shards" : "./build/shards";
 const SHARD_SUFFIX = ".packed";
 let trie = null;
 let locations = [];
