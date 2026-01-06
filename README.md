@@ -1,8 +1,10 @@
 # local-street-db
 
+A <1GB DB that enables client-side, global lookup for streets and POIs.
+
 ## What is this for?
 
-This repo is mostly about its artifact `street_trie.packed.tar.xz`. 
+This repo is mostly about its artifact [`street_trie.packed.tar.xz`](https://github.com/nielstron/local-street-db/releases). 
 It will allow you to turn names of streets and POIs into geolocations on this planet.
 Check out the demo web page and `web/app.js` to see how you could integrate the file into your tool.
 If you for example want to offer your users a way to geotag images based on addresses, it might be the right thing for you to host yourself or deploy together with your application.
