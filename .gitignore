@@ -1,5 +1,7 @@
 *.pbf
 *.csv
 *.osm
+*.json
+*.packed
 .idea
 __pycache__
