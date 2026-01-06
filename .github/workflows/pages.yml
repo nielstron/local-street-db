@@ -69,6 +69,14 @@ jobs:
           print(f"Downloaded {download_url} -> {out_path}")
           with tarfile.open(out_path, "r:xz") as tf:
               tf.extractall("dist")
+          shards_src = os.path.join("dist", "shards")
+          shards_dst = os.path.join("dist", "build", "shards")
+          if not os.path.isdir(shards_src):
+              raise SystemExit(f"expected shards/ at {shards_src}")
+          os.makedirs(os.path.dirname(shards_dst), exist_ok=True)
+          if os.path.exists(shards_dst):
+              raise SystemExit(f"destination already exists: {shards_dst}")
+          os.rename(shards_src, shards_dst)
           PY
 
       - name: Upload artifact

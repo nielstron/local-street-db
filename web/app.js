@@ -5,7 +5,7 @@ const searchInput = document.getElementById("search");
 const MAX_RESULTS = 80;
 const SHARD_PREFIX_LEN = 3;
 const SHARD_BASE = "street_trie";
-const SHARD_DIR = "build/shards";
+const SHARD_DIR = "/build/shards";
 const SHARD_SUFFIX = ".packed";
 let trie = null;
 let locations = [];
@@ -230,7 +230,7 @@ async function loadShard(shardKey) {
   if (shardLoads.has(shardKey)) {
     return shardLoads.get(shardKey);
   }
-  const url = `./${SHARD_DIR}/${SHARD_BASE}.shard_${shardKey}${SHARD_SUFFIX}`;
+  const url = `${SHARD_DIR}/${SHARD_BASE}.shard_${shardKey}${SHARD_SUFFIX}`;
   const loadPromise = fetch(url).then(async (response) => {
     if (!response.ok) {
       throw new Error(`Missing shard ${shardKey}`);
