@@ -1,7 +1,6 @@
 # local-street-db
 
-> JavaScript library that enables client-side, global geocoding for streets and POIs.
-Host it yourself on <1GB storage.
+#### JavaScript library that enables local, global geocoding for streets and POIs. Host it yourself on <1GB storage.
 
 ## What is this for?
 
