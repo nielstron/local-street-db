@@ -1,12 +1,13 @@
 # local-street-db
 
-A <1GB DB that enables client-side, global lookup for streets and POIs.
+A JavaScript library that enables client-side, global lookup for streets and POIs.
+Host it yourself on <1GB storage.
 
 ## What is this for?
 
-This repo is mostly about its artifact [`street_trie.packed.tar.xz`](https://github.com/nielstron/local-street-db/releases). 
+This repo is mostly about its artifact [`street_trie.packed.tar.xz`](https://github.com/nielstron/local-street-db/releases) and the corresponding [`street-lookup`](./web) library. 
 It will allow you to turn names of streets and POIs into geolocations on this planet.
-Check out the demo web page and `web/app.js` to see how you could integrate the file into your application.
+Check out the [demo web page](https://nielstron.github.io/local-street-db/) and [the library documentation](./web) to see how you could integrate the file into your application.
 If you for example want to offer your users a way to geotag images based on addresses, it might be the right thing for you to host yourself or deploy together with your application.
 
 ## What does this repo do?
@@ -79,3 +80,7 @@ cargo test --manifest-path extract/Cargo.toml
 ## Data sources
 
 This project expects OpenStreetMap PBF extracts (e.g. from https://download.openstreetmap.fr/extracts/).
+
+## Contributing
+
+Contributions are welcome! Head to the [Discussions](https://github.com/nielstron/local-street-db/discussions) to learn about what I consider interesting potential addtions and feel free to chime in with your use cases.

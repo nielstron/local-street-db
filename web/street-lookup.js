@@ -1,0 +1,384 @@
+function decodeVarint(view, offset) {
+  let shift = 0;
+  let value = 0;
+  let byte = 0;
+  do {
+    byte = view.getUint8(offset++);
+    value |= (byte & 0x7f) << shift;
+    shift += 7;
+  } while (byte & 0x80);
+  return [value, offset];
+}
+
+function decodeInt24(view, offset) {
+  let value =
+    view.getUint8(offset) |
+    (view.getUint8(offset + 1) << 8) |
+    (view.getUint8(offset + 2) << 16);
+  if (value & 0x800000) {
+    value |= 0xff000000;
+  }
+  return [value, offset + 3];
+}
+
+function decodePackedTrie(buffer) {
+  const view = new DataView(buffer);
+  const magic = String.fromCharCode(
+    view.getUint8(0),
+    view.getUint8(1),
+    view.getUint8(2),
+    view.getUint8(3)
+  );
+  if (magic !== "STRI") {
+    throw new Error("Invalid trie file");
+  }
+  const version = view.getUint8(4);
+  if (version !== 3 && version !== 4 && version !== 5) {
+    throw new Error(`Unsupported version ${version}`);
+  }
+  let scale;
+  let offset;
+  if (version === 5) {
+    scale =
+      view.getUint8(5) |
+      (view.getUint8(6) << 8) |
+      (view.getUint8(7) << 16);
+    offset = 8;
+  } else {
+    scale = view.getInt32(5, true);
+    offset = 9;
+  }
+
+  let placeNodeCount;
+  [placeNodeCount, offset] = decodeVarint(view, offset);
+  const nodeList = new Array(placeNodeCount);
+  for (let i = 0; i < placeNodeCount; i++) {
+    let nodeLen;
+    [nodeLen, offset] = decodeVarint(view, offset);
+    const bytes = new Uint8Array(buffer, offset, nodeLen);
+    const node = new TextDecoder("utf-8").decode(bytes);
+    offset += nodeLen;
+    nodeList[i] = node;
+  }
+
+  let cityCount;
+  [cityCount, offset] = decodeVarint(view, offset);
+  const cityList = new Array(cityCount);
+  for (let i = 0; i < cityCount; i++) {
+    let cityLen;
+    [cityLen, offset] = decodeVarint(view, offset);
+    const bytes = new Uint8Array(buffer, offset, cityLen);
+    const city = new TextDecoder("utf-8").decode(bytes);
+    offset += cityLen;
+    cityList[i] = city;
+  }
+
+  let count;
+  [count, offset] = decodeVarint(view, offset);
+  const locs = new Array(count);
+  for (let i = 0; i < count; i++) {
+    let lon;
+    let lat;
+    if (version === 5) {
+      [lon, offset] = decodeInt24(view, offset);
+      [lat, offset] = decodeInt24(view, offset);
+    } else {
+      lon = view.getInt32(offset, true);
+      lat = view.getInt32(offset + 4, true);
+      offset += 8;
+    }
+    let nodeIdx;
+    [nodeIdx, offset] = decodeVarint(view, offset);
+    let cityIdx;
+    [cityIdx, offset] = decodeVarint(view, offset);
+    locs[i] = [lon / scale, lat / scale, nodeIdx, cityIdx];
+  }
+
+  let labelTable = null;
+  if (version === 4) {
+    let labelCount;
+    [labelCount, offset] = decodeVarint(view, offset);
+    labelTable = new Array(labelCount);
+    for (let i = 0; i < labelCount; i++) {
+      let labelLen;
+      [labelLen, offset] = decodeVarint(view, offset);
+      const bytes = new Uint8Array(buffer, offset, labelLen);
+      const label = new TextDecoder("utf-8").decode(bytes);
+      offset += labelLen;
+      labelTable[i] = label;
+    }
+  }
+
+  let nodeCount;
+  [nodeCount, offset] = decodeVarint(view, offset);
+  const nodes = new Array(nodeCount);
+  for (let i = 0; i < nodeCount; i++) {
+    let edgeCount;
+    [edgeCount, offset] = decodeVarint(view, offset);
+    const edges = [];
+    for (let e = 0; e < edgeCount; e++) {
+      let label;
+      if (version === 4) {
+        let labelIdx;
+        [labelIdx, offset] = decodeVarint(view, offset);
+        label = labelTable[labelIdx] || "";
+      } else {
+        let labelLen;
+        [labelLen, offset] = decodeVarint(view, offset);
+        const bytes = new Uint8Array(buffer, offset, labelLen);
+        label = new TextDecoder("utf-8").decode(bytes);
+        offset += labelLen;
+      }
+      let childIdx;
+      [childIdx, offset] = decodeVarint(view, offset);
+      edges.push({ label, child: childIdx });
+    }
+
+    let valuesCount;
+    [valuesCount, offset] = decodeVarint(view, offset);
+    const values = [];
+    for (let v = 0; v < valuesCount; v++) {
+      let value;
+      [value, offset] = decodeVarint(view, offset);
+      values.push(value);
+    }
+    nodes[i] = { edges, values };
+  }
+
+  return { locations: locs, placeNodes: nodeList, placeCities: cityList, nodes };
+}
+
+function ensureArrayBuffer(view) {
+  if (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength) {
+    return view.buffer;
+  }
+  return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+}
+
+function maybeGunzip(buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    if (!window.pako || typeof window.pako.ungzip !== "function") {
+      throw new Error("pako is required to decode gzipped shards");
+    }
+    return ensureArrayBuffer(window.pako.ungzip(bytes));
+  }
+  return buffer;
+}
+
+class StreetLookup {
+  constructor(options) {
+    const opts = options || {};
+    this.maxResults = opts.maxResults ?? 80;
+    this.shardPrefixLen = opts.shardPrefixLen ?? 3;
+    this.shardBase = opts.shardBase ?? "street_trie";
+    this.shardSuffix = opts.shardSuffix ?? ".packed.gz";
+    this.shardRoot =
+      opts.shardRoot ??
+      "https://nielstron.github.io/local-street-db/build/shards";
+
+    this.trie = null;
+    this.locations = [];
+    this.placeNodes = [];
+    this.placeCities = [];
+    this.currentShardKey = null;
+    this.lookupId = 0;
+    this.shardCache = new Map();
+    this.shardLoads = new Map();
+  }
+
+  normalize(value) {
+    return value
+      .normalize("NFKD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]/gu, "");
+  }
+
+  getShardKey(value) {
+    const normalized = this.normalize(value.trim());
+    if (!normalized) return null;
+    const prefix = normalized.slice(0, this.shardPrefixLen);
+    let key = "";
+    for (const ch of prefix) {
+      key += /[a-z0-9]/.test(ch) ? ch : "_";
+    }
+    while (key.length < this.shardPrefixLen) {
+      key += "_";
+    }
+    return key;
+  }
+
+  async loadShard(shardKey) {
+    if (this.shardCache.has(shardKey)) {
+      return this.shardCache.get(shardKey);
+    }
+    if (this.shardLoads.has(shardKey)) {
+      return this.shardLoads.get(shardKey);
+    }
+    const url = `${this.shardRoot}/${this.shardBase}.shard_${shardKey}${this.shardSuffix}`;
+    const loadPromise = fetch(url).then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`Missing shard ${shardKey}`);
+      }
+      const buffer = await response.arrayBuffer();
+      const decoded = decodePackedTrie(maybeGunzip(buffer));
+      this.shardCache.set(shardKey, decoded);
+      this.shardLoads.delete(shardKey);
+      return decoded;
+    });
+    this.shardLoads.set(shardKey, loadPromise);
+    return loadPromise;
+  }
+
+  collectMatches(prefix) {
+    const normalizedPrefix = this.normalize(prefix);
+    const results = [];
+    if (!normalizedPrefix) return results;
+    let bestNode = 0;
+    let bestBuilt = "";
+    let bestConsumed = 0;
+
+    const collectFrom = (nodeIndex, built) => {
+      const node = this.trie.nodes[nodeIndex];
+      if (!node) return;
+
+      if (node.values.length) {
+        for (const idx of node.values) {
+          results.push({ display: built, index: idx });
+          if (results.length >= this.maxResults) return;
+        }
+      }
+      for (const edge of node.edges) {
+        if (results.length >= this.maxResults) return;
+        collectFrom(edge.child, built + edge.label);
+      }
+    };
+
+    const dfs = (nodeIndex, built, remaining, consumed) => {
+      const node = this.trie.nodes[nodeIndex];
+      if (!node) return;
+
+      if (consumed > bestConsumed) {
+        bestConsumed = consumed;
+        bestNode = nodeIndex;
+        bestBuilt = built;
+      }
+
+      if (remaining.length === 0) {
+        collectFrom(nodeIndex, built);
+        return;
+      }
+
+      for (const edge of node.edges) {
+        const edgeNormalized = this.normalize(edge.label);
+        if (!edgeNormalized) {
+          dfs(edge.child, built + edge.label, remaining, consumed);
+          continue;
+        }
+        if (remaining.startsWith(edgeNormalized)) {
+          dfs(
+            edge.child,
+            built + edge.label,
+            remaining.slice(edgeNormalized.length),
+            consumed + edgeNormalized.length
+          );
+        } else if (edgeNormalized.startsWith(remaining)) {
+          dfs(edge.child, built + edge.label, "", consumed + remaining.length);
+        }
+      }
+    };
+
+    dfs(0, "", normalizedPrefix, 0);
+    if (!results.length && bestConsumed > 0) {
+      collectFrom(bestNode, bestBuilt);
+    }
+    return results;
+  }
+
+  async lookup(query) {
+    const normalized = this.normalize(query.trim());
+    if (!normalized) {
+      return {
+        status: "empty",
+        minLength: this.shardPrefixLen,
+        results: [],
+      };
+    }
+    if (normalized.length < this.shardPrefixLen) {
+      return {
+        status: "short",
+        minLength: this.shardPrefixLen,
+        results: [],
+      };
+    }
+
+    const shardKey = this.getShardKey(query);
+    if (!shardKey) {
+      return {
+        status: "short",
+        minLength: this.shardPrefixLen,
+        results: [],
+      };
+    }
+
+    const lookupId = ++this.lookupId;
+    let loaded = false;
+    if (shardKey !== this.currentShardKey || !this.trie) {
+      try {
+        const decoded = await this.loadShard(shardKey);
+        if (lookupId !== this.lookupId) {
+          return { status: "stale", shardKey, results: [] };
+        }
+        this.trie = decoded;
+        this.locations = decoded.locations;
+        this.placeNodes = decoded.placeNodes;
+        this.placeCities = decoded.placeCities;
+        this.currentShardKey = shardKey;
+        loaded = true;
+      } catch (err) {
+        if (lookupId !== this.lookupId) {
+          return { status: "stale", shardKey, results: [] };
+        }
+        this.trie = null;
+        this.locations = [];
+        this.placeNodes = [];
+        this.placeCities = [];
+        this.currentShardKey = shardKey;
+        return { status: "missing", shardKey, results: [] };
+      }
+    }
+
+    if (!this.trie) {
+      return { status: "missing", shardKey, results: [] };
+    }
+
+    const matches = this.collectMatches(query);
+    const results = matches.map((entry) => ({
+      ...entry,
+      location: this.locations[entry.index] || null,
+      placeLabel: this.buildPlaceLabel(entry.index),
+    }));
+
+    return {
+      status: "ready",
+      shardKey,
+      loaded,
+      locationsCount: this.locations.length,
+      results,
+    };
+  }
+
+  buildPlaceLabel(index) {
+    const loc = this.locations[index];
+    if (!loc) return "Unknown city";
+    const nodeName = this.placeNodes[loc[2]] || "";
+    const cityName = this.placeCities[loc[3]] || "";
+    if (nodeName && cityName) {
+      return `${nodeName}, ${cityName}`;
+    }
+    return nodeName || cityName || "Unknown city";
+  }
+}
+
+window.StreetLookup = StreetLookup;
