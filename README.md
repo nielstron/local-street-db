@@ -1,12 +1,12 @@
 # local-street-db
 
-A JavaScript library that enables client-side, global lookup for streets and POIs.
+> JavaScript library that enables client-side, global geocoding for streets and POIs.
 Host it yourself on <1GB storage.
 
 ## What is this for?
 
 This repo is mostly about its artifact [`street_trie.packed.tar.xz`](https://github.com/nielstron/local-street-db/releases) and the corresponding [`street-lookup`](./web) library. 
-It will allow you to turn names of streets and POIs into geolocations on this planet.
+It will allow you to turn names of streets and POIs into geolocations on this planet (called "geocoding").
 Check out the [demo web page](https://nielstron.github.io/local-street-db/) and [the library documentation](./web) to see how you could integrate the file into your application.
 If you for example want to offer your users a way to geotag images based on addresses, it might be the right thing for you to host yourself or deploy together with your application.
 
