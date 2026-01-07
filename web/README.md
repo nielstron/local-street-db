@@ -1,6 +1,7 @@
 # Street Lookup Library
 
-`street-lookup.js` is a small client-side library that loads packed street trie shards on demand and performs lookups with a single async call.
+`street-lookup.js` is a small client-side library that loads packed street trie shards on demand and performs offline geocoding lookups with a single async call.
+It is designed for self-hosted, privacy-preserving address search in the browser.
 
 ## Include
 
@@ -32,6 +33,14 @@ if (result.status === "ready") {
 }
 ```
 
+## Configuration
+
+- `maxResults` (default: `80`): Maximum number of matches returned.
+- `shardPrefixLen` (default: `3`): Prefix length used to choose a shard.
+- `shardBase` (default: `"street_trie"`): Base filename for shard files.
+- `shardSuffix` (default: `".packed.gz"`): Shard filename suffix.
+- `shardRoot` (default: demo URL): Base URL where shards are hosted.
+
 ## Lookup API
 
 `lookup(query)` is the only call you need. It selects the shard, fetches it, caches it, and returns matches.
@@ -62,3 +71,9 @@ https://nielstron.github.io/local-street-db/build/shards
 ```
 
 If you host shards elsewhere, pass a different `shardRoot` in the constructor.
+
+## Hosting tips
+
+- Enable gzip or brotli for shard delivery (the shards are already gzipped, but CDN compression can still help headers).
+- Use a CDN or static host that supports range requests and caching.
+- Keep CORS headers open if shards are served from a different origin.
