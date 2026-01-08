@@ -399,10 +399,11 @@ class StreetLookup {
     return loadPromise;
   }
 
-  collectMatches(prefix) {
+  collectMatches(prefix, cityFilter) {
     const normalizedPrefix = this.normalize(prefix);
     const results = [];
     if (!normalizedPrefix) return results;
+    const normalizedCity = cityFilter ? this.normalize(cityFilter) : "";
     let bestNode = 0;
     let bestBuilt = "";
     let bestConsumed = 0;
@@ -412,13 +413,30 @@ class StreetLookup {
       return this.allowedKinds.has(kind);
     };
 
-    const getKindForValue = (value) => {
+    const getLocationForValue = (value) => {
       if (Array.isArray(value)) {
-        return value[4] ?? 0;
+        return value;
       }
       const loc = this.locations[value];
+      if (!loc) return null;
+      return loc;
+    };
+
+    const getKindForValue = (value) => {
+      const loc = getLocationForValue(value);
       if (!loc) return 0;
       return loc[4] ?? 0;
+    };
+
+    const matchesCityFilter = (value) => {
+      if (!normalizedCity) return true;
+      const loc = getLocationForValue(value);
+      if (!loc) return false;
+      const nodeName = this.placeNodes[loc[2]] || "";
+      const cityName = this.placeCities[loc[3]] || "";
+      const nodeNorm = this.normalize(nodeName);
+      const cityNorm = this.normalize(cityName);
+      return nodeNorm.includes(normalizedCity) || cityNorm.includes(normalizedCity);
     };
 
     const collectFrom = (nodeIndex, built) => {
@@ -429,6 +447,9 @@ class StreetLookup {
         for (const value of node.values) {
           const kind = getKindForValue(value);
           if (!isAllowedKind(kind)) {
+            continue;
+          }
+          if (!matchesCityFilter(value)) {
             continue;
           }
           if (Array.isArray(value)) {
@@ -487,7 +508,14 @@ class StreetLookup {
   }
 
   async lookup(query) {
-    const normalized = this.normalize(query.trim());
+    let streetQuery = query;
+    let cityQuery = "";
+    const commaIndex = query.indexOf(",");
+    if (commaIndex >= 0) {
+      streetQuery = query.slice(0, commaIndex).trim();
+      cityQuery = query.slice(commaIndex + 1).trim();
+    }
+    const normalized = this.normalize(streetQuery.trim());
     if (!normalized) {
       return {
         status: "empty",
@@ -503,7 +531,7 @@ class StreetLookup {
       };
     }
 
-    const shardKey = this.getShardKey(query);
+    const shardKey = this.getShardKey(streetQuery);
     if (!shardKey) {
       return {
         status: "short",
@@ -545,7 +573,7 @@ class StreetLookup {
       return { status: "missing", shardKey, results: [] };
     }
 
-    const matches = this.collectMatches(query);
+    const matches = this.collectMatches(streetQuery, cityQuery);
     const results = matches.map((entry) => ({
       ...entry,
       location: entry.location ?? this.locations[entry.index] ?? null,
