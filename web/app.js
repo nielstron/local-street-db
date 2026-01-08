@@ -62,6 +62,19 @@ function renderResults(entries) {
     return [];
   }
 
+  const KIND_LABELS = {
+    0: { label: "Street", emoji: "🛣️" },
+    1: { label: "Airport", emoji: "✈️" },
+    2: { label: "Train station", emoji: "🚆" },
+    3: { label: "Bus stop", emoji: "🚌" },
+    4: { label: "Ferry terminal", emoji: "⛴️" },
+    5: { label: "University", emoji: "🎓" },
+    6: { label: "Museum", emoji: "🏛️" },
+    7: { label: "Civic building", emoji: "🏛️" },
+    8: { label: "Sight", emoji: "📍" },
+    15: { label: "Other", emoji: "•" },
+  };
+
   for (const entry of limitedEntries) {
     const div = document.createElement("div");
     div.className = "result-item";
@@ -72,11 +85,12 @@ function renderResults(entries) {
 
     const nameEl = document.createElement("span");
     nameEl.className = "result-name";
-    nameEl.textContent = entry.display;
+    const kind = KIND_LABELS[entry.kindByte] || KIND_LABELS[15];
+    nameEl.textContent = `${kind.emoji} ${entry.display}`;
 
     const cityEl = document.createElement("span");
     cityEl.className = "result-city";
-    cityEl.textContent = cityText;
+    cityEl.textContent = `${cityText} · ${kind.label}`;
 
     mainEl.append(nameEl, cityEl);
     div.append(mainEl);
