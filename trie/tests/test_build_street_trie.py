@@ -179,6 +179,12 @@ def test_pack_trie_binary_format() -> None:
 
 def test_build_trie_from_csv(tmp_path: Path) -> None:
     csv_path = tmp_path / "streets.csv"
+    countries_path = tmp_path / "countries.csv"
+    with countries_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["country", "latitude", "longitude", "name"])
+        writer.writerow(["AA", "9.0", "10.0", "Country A"])
+        writer.writerow(["BB", "-5.0", "12.0", "Country B"])
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(
@@ -198,7 +204,7 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
         writer.writerow(["Second St", "bus_stop", "5.0", "6.0", "", "city", "City C"])
         writer.writerow(["Third St", "street", "7.0", "8.0", "Suburb A", "suburb", "City A"])
 
-    locations, nodes, cities, trie = build_trie(csv_path)
+    locations, nodes, cities, trie = build_trie(csv_path, countries_path)
     assert locations == [
         (1.0, 2.0, 1, 1, 0),
         (1.0, 2.0, 0, 1, 9),
@@ -209,9 +215,11 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
         (7.0, 8.0, 3, 1, 0),
         (7.0, 8.0, 0, 1, 9),
         (7.0, 8.0, 3, 1, 9),
+        (10.0, 9.0, 4, 4, 10),
+        (12.0, -5.0, 5, 5, 10),
     ]
-    assert nodes == ["", "Node A", "Node B", "Suburb A"]
-    assert cities == ["", "City A", "City B", "City C"]
+    assert nodes == ["", "Node A", "Node B", "Suburb A", "AA", "BB"]
+    assert cities == ["", "City A", "City B", "City C", "Country A", "Country B"]
     compressed = compress_trie(trie)
     assert lookup_trie(compressed, "Main St") == [0, 0, 2]
     assert lookup_trie(compressed, "Second St") == [4]
@@ -220,3 +228,7 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
     assert lookup_trie(compressed, "City B") == [3]
     assert lookup_trie(compressed, "City C") == [5]
     assert lookup_trie(compressed, "Suburb A") == [8]
+    assert lookup_trie(compressed, "Country A") == [9]
+    assert lookup_trie(compressed, "Country B") == [10]
+    assert lookup_trie(compressed, "AA") == [9]
+    assert lookup_trie(compressed, "BB") == [10]

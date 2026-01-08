@@ -19,9 +19,12 @@ KIND_TO_BYTE = {
     "civic_building": 7,
     "sight": 8,
     "city": 9,
+    "country": 10,
 }
 DEFAULT_KIND_BYTE = 15
 CITY_KIND_BYTE = KIND_TO_BYTE["city"]
+COUNTRY_KIND_BYTE = KIND_TO_BYTE["country"]
+DEFAULT_COUNTRIES_PATH = Path(__file__).with_name("countries.csv")
 
 
 def find_default_csv(folder: Path) -> Path:
@@ -62,6 +65,78 @@ def add_location_entry(
     insert_trie(trie, name, index)
 
 
+def load_countries(
+    countries_path: Path | None,
+) -> List[Tuple[str, str, float, float]]:
+    if countries_path is None:
+        return []
+    if not countries_path.exists():
+        raise FileNotFoundError(f"countries file not found: {countries_path}")
+    countries: List[Tuple[str, str, float, float]] = []
+    with countries_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        required = {"country", "name", "latitude", "longitude"}
+        if not required.issubset(reader.fieldnames or []):
+            missing = ", ".join(sorted(required - set(reader.fieldnames or [])))
+            raise ValueError(f"missing required countries CSV columns: {missing}")
+        for row in reader:
+            code = (row.get("country") or "").strip().upper()
+            name = (row.get("name") or "").strip()
+            if not name:
+                continue
+            try:
+                lat = float(row["latitude"])
+                lon = float(row["longitude"])
+            except (TypeError, ValueError):
+                continue
+            countries.append((code, name, lon, lat))
+    return countries
+
+
+def add_countries_to_trie(
+    trie: Dict,
+    countries: List[Tuple[str, str, float, float]],
+    node_names: List[str],
+    node_index: Dict[str, int],
+    city_names: List[str],
+    city_index: Dict[str, int],
+    locations: List[Tuple[float, float, int, int, int]],
+    location_index: Dict[Tuple[float, float, int, int, int], int],
+) -> None:
+    for code, name, lon, lat in countries:
+        if code and code not in node_index:
+            node_index[code] = len(node_names)
+            node_names.append(code)
+        node_idx = node_index.get(code, 0)
+        if name not in city_index:
+            city_index[name] = len(city_names)
+            city_names.append(name)
+        city_idx = city_index[name]
+        add_location_entry(
+            trie,
+            name,
+            lon,
+            lat,
+            node_idx,
+            city_idx,
+            COUNTRY_KIND_BYTE,
+            locations,
+            location_index,
+        )
+        if code:
+            add_location_entry(
+                trie,
+                code,
+                lon,
+                lat,
+                node_idx,
+                city_idx,
+                COUNTRY_KIND_BYTE,
+                locations,
+                location_index,
+            )
+
+
 def compress_trie(trie: Dict) -> Dict:
     terminal = trie.get(TERMINAL_KEY)
     compressed: Dict = {}
@@ -92,6 +167,7 @@ def compress_trie(trie: Dict) -> Dict:
 
 def build_trie(
     input_path: Path,
+    countries_path: Path | None = DEFAULT_COUNTRIES_PATH,
 ) -> Tuple[List[Tuple[float, float, int, int, int]], List[str], List[str], Dict]:
     locations: List[Tuple[float, float, int, int, int]] = []
     location_index: Dict[Tuple[float, float, int, int, int], int] = {}
@@ -177,6 +253,17 @@ def build_trie(
                     locations,
                     location_index,
                 )
+    countries = load_countries(countries_path)
+    add_countries_to_trie(
+        trie,
+        countries,
+        node_names,
+        node_index,
+        city_names,
+        city_index,
+        locations,
+        location_index,
+    )
     return locations, node_names, city_names, trie
 
 
@@ -207,6 +294,7 @@ def normalize_name(name: str) -> str:
 def build_trie_shards(
     input_path: Path,
     shard_len: int,
+    countries_path: Path | None = DEFAULT_COUNTRIES_PATH,
 ) -> Dict[str, Dict]:
     shards: Dict[str, Dict] = {}
     with input_path.open(newline="", encoding="utf-8") as f:
@@ -302,6 +390,59 @@ def build_trie_shards(
                     shard["locations"],
                     shard["location_index"],
                 )
+
+    countries = load_countries(countries_path)
+    for code, name, lon, lat in countries:
+        shard_key = shard_key_for_name(name, shard_len)
+        if shard_key is None:
+            continue
+        shard = shards.get(shard_key)
+        if shard is None:
+            shard = {
+                "locations": [],
+                "location_index": {},
+                "node_names": [""],
+                "node_index": {"": 0},
+                "city_names": [""],
+                "city_index": {"": 0},
+                "trie": {},
+            }
+            shards[shard_key] = shard
+        city_index = shard["city_index"]
+        city_names = shard["city_names"]
+        node_index = shard["node_index"]
+        node_names = shard["node_names"]
+        if code and code not in node_index:
+            node_index[code] = len(node_names)
+            node_names.append(code)
+        node_idx = node_index.get(code, 0)
+        if name not in city_index:
+            city_index[name] = len(city_names)
+            city_names.append(name)
+        city_idx = city_index[name]
+        add_location_entry(
+            shard["trie"],
+            name,
+            lon,
+            lat,
+            node_idx,
+            city_idx,
+            COUNTRY_KIND_BYTE,
+            shard["locations"],
+            shard["location_index"],
+        )
+        if code:
+            add_location_entry(
+                shard["trie"],
+                code,
+                lon,
+                lat,
+                node_idx,
+                city_idx,
+                COUNTRY_KIND_BYTE,
+                shard["locations"],
+                shard["location_index"],
+            )
 
     for shard in shards.values():
         shard.pop("location_index", None)
@@ -526,6 +667,12 @@ def parse_args(argv: Iterable[str] = None) -> argparse.Namespace:
         help="Output format. Defaults to packed for compact binary output.",
     )
     parser.add_argument(
+        "--countries",
+        type=Path,
+        default=DEFAULT_COUNTRIES_PATH,
+        help="Path to a countries CSV (name, latitude, longitude).",
+    )
+    parser.add_argument(
         "--shard-prefix-len",
         type=int,
         default=3,
@@ -540,7 +687,9 @@ def main() -> None:
     print(f"Building trie from {input_path}")
     if args.shard_prefix_len > 0:
         print(f"Sharding trie by first {args.shard_prefix_len} characters")
-        shards = build_trie_shards(input_path, args.shard_prefix_len)
+        shards = build_trie_shards(
+            input_path, args.shard_prefix_len, args.countries
+        )
         print(f"Built {len(shards)} shards")
         output_base = args.output
         if output_base.suffix:
@@ -569,7 +718,9 @@ def main() -> None:
             print(f"Writing shard {shard_key} to {shard_output} ({args.format})")
             write_payload(payload, shard_output, args.format)
     else:
-        locations, node_names, city_names, trie = build_trie(input_path)
+        locations, node_names, city_names, trie = build_trie(
+            input_path, args.countries
+        )
         print(
             "Loaded "
             f"{len(locations)} locations, "

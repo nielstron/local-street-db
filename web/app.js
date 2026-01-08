@@ -20,6 +20,7 @@ const MAX_RESULTS = LOOKUP_CONFIG.maxResults;
 const SHARD_PREFIX_LEN = LOOKUP_CONFIG.shardPrefixLen;
 let map = null;
 let markersLayer = null;
+let countriesPromise = null;
 
 const KIND_LABELS = {
   0: { label: "Street", emoji: "🛣️" },
@@ -32,9 +33,28 @@ const KIND_LABELS = {
   7: { label: "Civic building", emoji: "🏛️" },
   8: { label: "Sight", emoji: "📍" },
   9: { label: "City", emoji: "🏙️" },
+  10: { label: "Country", emoji: "🌍" },
   15: { label: "Other", emoji: "•" },
 };
-const KIND_ORDER = [0, 9, 1, 2, 3, 4, 5, 6, 7, 8, 15];
+const KIND_ORDER = [0, 9, 10, 1, 2, 3, 4, 5, 6, 7, 8, 15];
+
+async function loadCountries() {
+  if (countriesPromise) return countriesPromise;
+  countriesPromise = fetch("countries.json").then(async (response) => {
+    if (!response.ok) {
+      throw new Error("Failed to load countries");
+    }
+    return response.json();
+  });
+  return countriesPromise;
+}
+
+async function lookupCountryCode(code) {
+  const normalized = code.trim().toUpperCase();
+  if (normalized.length !== 2) return null;
+  const countries = await loadCountries();
+  return countries.find((entry) => entry.code === normalized) || null;
+}
 
 function renderFilters() {
   if (!filtersEl) return;
@@ -84,10 +104,19 @@ function clearMarkers() {
 function addMarkers(entries) {
   clearMarkers();
   const latLngs = [];
+  let maxZoom = null;
   for (const entry of entries) {
     const loc = entry.location;
     if (!loc) continue;
     const [lon, lat] = loc;
+    const kind = entry.kindByte ?? 0;
+    if (kind === 10) {
+      maxZoom = maxZoom === null ? 7 : Math.min(maxZoom, 7);
+    } else if (kind === 9) {
+      maxZoom = maxZoom === null ? 10 : Math.min(maxZoom, 10);
+    } else if (maxZoom === null) {
+      maxZoom = 14;
+    }
     const marker = L.circleMarker([lat, lon], {
       radius: 6,
       color: "#2f5d62",
@@ -98,7 +127,7 @@ function addMarkers(entries) {
     latLngs.push([lat, lon]);
   }
   if (latLngs.length) {
-    map.fitBounds(latLngs, { padding: [40, 40] });
+    map.fitBounds(latLngs, { padding: [40, 40], maxZoom: maxZoom ?? 14 });
   }
 }
 
@@ -148,6 +177,35 @@ async function updateSearch() {
   const rawValue = searchInput.value;
   const value = rawValue.trim();
   statusEl.textContent = "Searching…";
+
+  if (value.length === 2 && !value.includes(",")) {
+    try {
+      const match = await lookupCountryCode(value);
+      if (!match) {
+        resultsEl.textContent = "No matches";
+        statusEl.textContent = `No country for code ${value.toUpperCase()}`;
+        clearMarkers();
+        return;
+      }
+      const entry = {
+        display: match.name,
+        placeLabel: match.code,
+        kindByte: 10,
+        location: [match.lon, match.lat, 0, 0, 10],
+      };
+      statusEl.textContent = `Country code ${match.code}`;
+      const entries = renderResults([entry]);
+      addMarkers(entries);
+      return;
+    } catch (err) {
+      console.error(err);
+      resultsEl.textContent = "No matches";
+      statusEl.textContent = "Failed to load countries";
+      clearMarkers();
+      return;
+    }
+  }
+
   const lookupResult = await streetLookup.lookup(value);
   if (lookupResult.status === "stale") return;
 
