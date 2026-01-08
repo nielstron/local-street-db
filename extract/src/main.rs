@@ -511,7 +511,7 @@ struct StreetEntry {
     city_resolved: String,
 }
 
-const MERGE_DISTANCE_KM: f64 = 0.2;
+const MERGE_DISTANCE_KM: f64 = 1.0;
 
 fn merge_city_key(entry: &StreetEntry) -> String {
     if !entry.city_resolved.is_empty() {
@@ -605,7 +605,11 @@ fn merge_entries(entries: Vec<StreetEntry>) -> Vec<StreetEntry> {
     }
 
     let mut merged = Vec::new();
-    for (_, group) in grouped {
+    for ((_, city_key), group) in grouped {
+        if city_key.is_empty() {
+            merged.extend(group.into_iter());
+            continue;
+        }
         let mut remaining = vec![true; group.len()];
         for i in 0..group.len() {
             if !remaining[i] {
@@ -1259,6 +1263,10 @@ mod tests {
   <node id="1" lat="0.0" lon="0.0" />
   <node id="2" lat="0.001" lon="0.0" />
   <node id="3" lat="0.002" lon="0.0" />
+  <node id="10" lat="0.001" lon="0.001">
+    <tag k="place" v="city" />
+    <tag k="name" v="Testville" />
+  </node>
   <way id="40">
     <nd ref="1" />
     <nd ref="2" />
@@ -1268,6 +1276,35 @@ mod tests {
   <way id="41">
     <nd ref="2" />
     <nd ref="3" />
+    <tag k="highway" v="residential" />
+    <tag k="name" v="Dave Burns Drive" />
+  </way>
+</osm>
+"#;
+
+    const OSM_MERGE_DIFFERENT_CITY: &str = r#"<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6" generator="test">
+  <node id="1" lat="0.0" lon="0.0" />
+  <node id="2" lat="0.001" lon="0.0" />
+  <node id="3" lat="0.008" lon="0.0" />
+  <node id="4" lat="0.009" lon="0.0" />
+  <node id="10" lat="0.001" lon="0.001">
+    <tag k="place" v="city" />
+    <tag k="name" v="Alpha City" />
+  </node>
+  <node id="11" lat="0.0085" lon="0.001">
+    <tag k="place" v="city" />
+    <tag k="name" v="Beta City" />
+  </node>
+  <way id="40">
+    <nd ref="1" />
+    <nd ref="2" />
+    <tag k="highway" v="residential" />
+    <tag k="name" v="Dave Burns Drive" />
+  </way>
+  <way id="41">
+    <nd ref="3" />
+    <nd ref="4" />
     <tag k="highway" v="residential" />
     <tag k="name" v="Dave Burns Drive" />
   </way>
@@ -1481,6 +1518,31 @@ mod tests {
 
         let lat: f64 = data_rows[0][3].parse().unwrap();
         assert!((lat - 0.001).abs() < 1e-9);
+    }
+
+    #[test]
+    fn extract_to_csv_keeps_same_name_separate_for_different_cities() {
+        let dir = tempdir().unwrap();
+        let osm_path = dir.path().join("merge_city.osm");
+        let out_path = dir.path().join("out.csv");
+        std::fs::write(&osm_path, OSM_MERGE_DIFFERENT_CITY).unwrap();
+
+        extract_to_csv(&osm_path, &out_path).unwrap();
+
+        let mut reader = ReaderBuilder::new()
+            .has_headers(false)
+            .from_path(&out_path)
+            .unwrap();
+        let rows: Vec<Vec<String>> = reader
+            .records()
+            .map(|row| row.unwrap().iter().map(|value| value.to_string()).collect())
+            .collect();
+
+        let data_rows: Vec<&Vec<String>> = rows.iter().skip(1).collect();
+        assert_eq!(data_rows.len(), 2);
+        let mut cities: Vec<&str> = data_rows.iter().map(|row| row[7].as_str()).collect();
+        cities.sort();
+        assert_eq!(cities, vec!["Alpha City", "Beta City"]);
     }
 
     #[test]
