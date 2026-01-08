@@ -8,6 +8,14 @@ from typing import Dict, Iterable, List, Tuple
 import csv
 
 TERMINAL_KEY = "\0"
+KIND_TO_BYTE = {
+    "street": 0,
+    "airport": 1,
+    "train_station": 2,
+    "bus_stop": 3,
+    "sight": 4,
+}
+DEFAULT_KIND_BYTE = 5
 
 
 def find_default_csv(folder: Path) -> Path:
@@ -56,8 +64,8 @@ def compress_trie(trie: Dict) -> Dict:
 
 def build_trie(
     input_path: Path,
-) -> Tuple[List[Tuple[float, float, int, int]], List[str], List[str], Dict]:
-    locations: List[Tuple[float, float, int, int]] = []
+) -> Tuple[List[Tuple[float, float, int, int, int]], List[str], List[str], Dict]:
+    locations: List[Tuple[float, float, int, int, int]] = []
     location_index: Dict[Tuple[float, float], int] = {}
     node_names: List[str] = [""]
     node_index: Dict[str, int] = {"": 0}
@@ -68,6 +76,7 @@ def build_trie(
         reader = csv.DictReader(f)
         required = {
             "streetname",
+            "kind",
             "center_lon",
             "center_lat",
             "city_place_node",
@@ -99,12 +108,15 @@ def build_trie(
                 city_names.append(city)
             city_idx = city_index[city]
 
-            loc_key = (lon, lat)
+            kind_str = (row.get("kind") or "").strip().lower()
+            kind_byte = KIND_TO_BYTE.get(kind_str, DEFAULT_KIND_BYTE)
+
+            loc_key = (lon, lat, node_idx, city_idx, kind_byte)
             index = location_index.get(loc_key)
             if index is None:
                 index = len(locations)
                 location_index[loc_key] = index
-                locations.append((lon, lat, node_idx, city_idx))
+                locations.append((lon, lat, node_idx, city_idx, kind_byte))
             insert_trie(trie, name, index)
     return locations, node_names, city_names, trie
 
@@ -142,6 +154,7 @@ def build_trie_shards(
         reader = csv.DictReader(f)
         required = {
             "streetname",
+            "kind",
             "center_lon",
             "center_lat",
             "city_place_node",
@@ -189,12 +202,15 @@ def build_trie_shards(
                 shard["city_names"].append(city)
             city_idx = shard["city_index"][city]
 
-            loc_key = (lon, lat)
+            kind_str = (row.get("kind") or "").strip().lower()
+            kind_byte = KIND_TO_BYTE.get(kind_str, DEFAULT_KIND_BYTE)
+
+            loc_key = (lon, lat, node_idx, city_idx, kind_byte)
             index = shard["location_index"].get(loc_key)
             if index is None:
                 index = len(shard["locations"])
                 shard["location_index"][loc_key] = index
-                shard["locations"].append((lon, lat, node_idx, city_idx))
+                shard["locations"].append((lon, lat, node_idx, city_idx, kind_byte))
             insert_trie(shard["trie"], name, index)
 
     for shard in shards.values():
@@ -309,7 +325,7 @@ def build_louds(trie: Dict) -> Tuple[int, int, int, bytes, List[str], List[List[
 
 
 def pack_trie(
-    locations: List[Tuple[float, float, int, int]],
+    locations: List[Tuple[float, float, int, int, int]],
     node_names: List[str],
     city_names: List[str],
     trie: Dict,
@@ -317,7 +333,7 @@ def pack_trie(
 ) -> bytes:
     out = bytearray()
     out.extend(b"STRI")
-    out.append(9)
+    out.append(11)
     if scale < 0 or scale > 0xFFFFFF:
         raise ValueError("scale must fit in 3 bytes")
     out.extend(scale.to_bytes(3, "little", signed=False))
@@ -327,10 +343,10 @@ def pack_trie(
     out.extend(encode_prefix_table(re_nodes))
     out.extend(encode_prefix_table(re_cities))
 
-    remapped_locations: List[Tuple[float, float, int, int]] = []
-    for lon, lat, node_idx, city_idx in locations:
+    remapped_locations: List[Tuple[float, float, int, int, int]] = []
+    for lon, lat, node_idx, city_idx, kind_byte in locations:
         remapped_locations.append(
-            (lon, lat, node_index[node_idx], city_index[city_idx])
+            (lon, lat, node_index[node_idx], city_index[city_idx], kind_byte)
         )
 
     node_count, edge_count, bit_count, louds_bytes, edge_labels, values_per_node = build_louds(trie)
@@ -343,16 +359,31 @@ def pack_trie(
         out.extend(encode_varint(len(label_bytes)))
         out.extend(label_bytes)
 
+    pending_kind: int | None = None
+
+    def write_kind_nibble(kind_byte: int) -> None:
+        nonlocal pending_kind
+        nibble = kind_byte & 0x0F
+        if pending_kind is None:
+            pending_kind = nibble
+        else:
+            out.append(pending_kind | (nibble << 4))
+            pending_kind = None
+
     for values in values_per_node:
         out.extend(encode_varint(len(values)))
         for value in values:
-            lon, lat, node_idx, city_idx = remapped_locations[value]
+            lon, lat, node_idx, city_idx, kind_byte = remapped_locations[value]
             lon_i = int(round(lon * scale))
             lat_i = int(round(lat * scale))
             out.extend(lon_i.to_bytes(3, "little", signed=True))
             out.extend(lat_i.to_bytes(3, "little", signed=True))
             out.extend(encode_varint(node_idx))
             out.extend(encode_varint(city_idx))
+            write_kind_nibble(kind_byte)
+
+    if pending_kind is not None:
+        out.append(pending_kind)
 
     return bytes(out)
 

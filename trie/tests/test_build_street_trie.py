@@ -72,7 +72,7 @@ def test_lookup_trie_with_compressed_edges():
 
 def test_write_payload_msgpack(tmp_path: Path) -> None:
     payload = {
-        "locations": [(1.0, 2.0, 0, 0)],
+        "locations": [(1.0, 2.0, 0, 0, 0)],
         "city_place_nodes": [""],
         "city_place_cities": ["Testville"],
         "trie": {"a": {TERMINAL_KEY: [0]}},
@@ -85,7 +85,7 @@ def test_write_payload_msgpack(tmp_path: Path) -> None:
 
     data = msgpack.unpackb(out_path.read_bytes(), raw=False)
     assert data == {
-        "locations": [[1.0, 2.0, 0, 0]],
+        "locations": [[1.0, 2.0, 0, 0, 0]],
         "city_place_nodes": [""],
         "city_place_cities": ["Testville"],
         "trie": {"a": {TERMINAL_KEY: [0]}},
@@ -107,7 +107,7 @@ def decode_varint(data: bytes, offset: int) -> tuple[int, int]:
 
 def test_pack_trie_binary_format() -> None:
     payload = {
-        "locations": [(1.0, 2.0, 0, 0)],
+        "locations": [(1.0, 2.0, 0, 0, 0)],
         "city_place_nodes": [""],
         "city_place_cities": ["Testville"],
         "trie": {"a": {TERMINAL_KEY: [0]}},
@@ -121,7 +121,7 @@ def test_pack_trie_binary_format() -> None:
     )
 
     assert data[:4] == b"STRI"
-    assert data[4] == 9
+    assert data[4] == 11
     scale = data[5] | (data[6] << 8) | (data[7] << 16)
     assert scale == 10_000
     offset = 8
@@ -168,10 +168,13 @@ def test_pack_trie_binary_format() -> None:
     offset += 6
     node_idx, offset = decode_varint(data, offset)
     city_idx, offset = decode_varint(data, offset)
+    kind_byte = data[offset] & 0x0F
+    offset += 1
     assert lon == 10_000
     assert lat == 20_000
     assert node_idx == 0
     assert city_idx == 0
+    assert kind_byte == 0
 
 
 def test_build_trie_from_csv(tmp_path: Path) -> None:
@@ -181,19 +184,24 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
         writer.writerow(
             [
                 "streetname",
+                "kind",
                 "center_lon",
                 "center_lat",
                 "city_place_node",
                 "city_place_city",
             ]
         )
-        writer.writerow(["Main St", "1.0", "2.0", "Node A", "City A"])
-        writer.writerow(["Main St", "1.0", "2.0", "Node A", "City A"])
-        writer.writerow(["Main St", "3.0", "4.0", "Node B", "City B"])
-        writer.writerow(["Second St", "5.0", "6.0", "", "City C"])
+        writer.writerow(["Main St", "street", "1.0", "2.0", "Node A", "City A"])
+        writer.writerow(["Main St", "street", "1.0", "2.0", "Node A", "City A"])
+        writer.writerow(["Main St", "street", "3.0", "4.0", "Node B", "City B"])
+        writer.writerow(["Second St", "bus_stop", "5.0", "6.0", "", "City C"])
 
     locations, nodes, cities, trie = build_trie(csv_path)
-    assert locations == [(1.0, 2.0, 1, 1), (3.0, 4.0, 2, 2), (5.0, 6.0, 0, 3)]
+    assert locations == [
+        (1.0, 2.0, 1, 1, 0),
+        (3.0, 4.0, 2, 2, 0),
+        (5.0, 6.0, 0, 3, 3),
+    ]
     assert nodes == ["", "Node A", "Node B"]
     assert cities == ["", "City A", "City B", "City C"]
     compressed = compress_trie(trie)

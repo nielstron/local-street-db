@@ -97,6 +97,7 @@ SECTION_GROUPS = {
         "locations.lonlat_bytes",
         "locations.node_idx_varint",
         "locations.city_idx_varint",
+        "locations.kind_bytes",
     ],
     "label_table": [
         "label_table.count_varint",
@@ -142,10 +143,10 @@ def parse_packed_trie(data: bytes, collect_edges: bool = False) -> TrieStats:
     version = data[offset]
     stats.add("header.version", 1)
     offset += 1
-    if version not in (3, 4, 5, 6, 7, 9):
+    if version not in (3, 4, 5, 6, 7, 8, 9, 10, 11):
         raise ParseError(f"unsupported version {version}")
 
-    if version in (5, 6, 7, 9):
+    if version in (5, 6, 7, 8, 9, 10, 11):
         if offset + 3 > len(data):
             raise ParseError("unexpected EOF reading scale")
         scale = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16)
@@ -239,7 +240,7 @@ def parse_packed_trie(data: bytes, collect_edges: bool = False) -> TrieStats:
             stats.add("label_table.label_bytes", label_len)
             offset += label_len
 
-    if version in (7, 9):
+    if version in (7, 9, 10, 11):
         node_count, offset, size = decode_varint(data, offset)
         stats.add("louds.node_count_varint", size)
         stats.meta["trie_nodes"] = node_count
@@ -264,6 +265,7 @@ def parse_packed_trie(data: bytes, collect_edges: bool = False) -> TrieStats:
             offset += label_len
 
         value_total = 0
+        kind_pending = False
         for _ in range(node_count):
             values_count, offset, size = decode_varint(data, offset)
             stats.add("trie.values.count_varint", size)
@@ -277,6 +279,25 @@ def parse_packed_trie(data: bytes, collect_edges: bool = False) -> TrieStats:
                 stats.add("locations.node_idx_varint", size)
                 _, offset, size = decode_varint(data, offset)
                 stats.add("locations.city_idx_varint", size)
+                if version >= 11:
+                    if kind_pending:
+                        if offset + 1 > len(data):
+                            raise ParseError("unexpected EOF reading location kind byte")
+                        stats.add("locations.kind_bytes", 1)
+                        offset += 1
+                        kind_pending = False
+                    else:
+                        kind_pending = True
+                elif version >= 10:
+                    if offset + 1 > len(data):
+                        raise ParseError("unexpected EOF reading location kind byte")
+                    stats.add("locations.kind_bytes", 1)
+                    offset += 1
+        if version >= 11 and kind_pending:
+            if offset + 1 > len(data):
+                raise ParseError("unexpected EOF reading location kind byte")
+            stats.add("locations.kind_bytes", 1)
+            offset += 1
     else:
         node_count, offset, size = decode_varint(data, offset)
         stats.add("trie.nodes.count_varint", size)
@@ -343,9 +364,9 @@ def parse_packed_trie(data: bytes, collect_edges: bool = False) -> TrieStats:
 
     stats.meta["trie_edges"] = edge_total
     stats.meta["trie_values"] = value_total
-    if version in (6, 7):
+    if version in (6, 7, 9, 10):
         stats.meta["locations"] = value_total
-    if collect_edges and version != 7:
+    if collect_edges and version != 7 and version != 9 and version != 10:
         stats.estimates["edges.label_bytes_inline"] = label_bytes_total
         stats.estimates["edges.label_len_varints_inline"] = label_len_varints_total
         stats.estimates["edges.child_varints_inline"] = child_varints_total

@@ -56,12 +56,12 @@ function decodePackedTrie(buffer) {
     throw new Error("Invalid trie file");
   }
   const version = view.getUint8(4);
-  if (version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 9) {
+  if (version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 9 && version !== 10 && version !== 11) {
     throw new Error(`Unsupported version ${version}`);
   }
   let scale;
   let offset;
-  if (version === 5 || version === 6 || version === 7 || version === 9) {
+  if (version === 5 || version === 6 || version === 7 || version === 9 || version === 10 || version === 11) {
     scale =
       view.getUint8(5) |
       (view.getUint8(6) << 8) |
@@ -166,6 +166,7 @@ function decodePackedTrie(buffer) {
     }
 
     const valuesPerNode = new Array(nodeCount);
+    let pendingKindRef = null;
     for (let i = 0; i < nodeCount; i++) {
       let valuesCount;
       [valuesCount, offset] = decodeVarint(view, offset);
@@ -179,10 +180,35 @@ function decodePackedTrie(buffer) {
         [nodeIdx, offset] = decodeVarint(view, offset);
         let cityIdx;
         [cityIdx, offset] = decodeVarint(view, offset);
-        values.push([lon / scale, lat / scale, nodeIdx, cityIdx]);
+        if (version >= 11) {
+          const entryIndex = values.length;
+          values.push([lon / scale, lat / scale, nodeIdx, cityIdx, 0]);
+          if (!pendingKindRef) {
+            pendingKindRef = { list: values, index: entryIndex };
+          } else {
+            const byte = view.getUint8(offset);
+            offset += 1;
+            pendingKindRef.list[pendingKindRef.index][4] = byte & 0x0f;
+            values[entryIndex][4] = (byte >> 4) & 0x0f;
+            pendingKindRef = null;
+          }
+        } else {
+          let kind = 0;
+          if (version >= 10) {
+            kind = view.getUint8(offset);
+            offset += 1;
+          }
+          values.push([lon / scale, lat / scale, nodeIdx, cityIdx, kind]);
+        }
         locationsCount += 1;
       }
       valuesPerNode[i] = values;
+    }
+    if (version >= 11 && pendingKindRef) {
+      const byte = view.getUint8(offset);
+      offset += 1;
+      pendingKindRef.list[pendingKindRef.index][4] = byte & 0x0f;
+      pendingKindRef = null;
     }
 
     let currentNode = 0;
@@ -487,6 +513,8 @@ class StreetLookup {
       ...entry,
       location: entry.location ?? this.locations[entry.index] ?? null,
       placeLabel: this.buildPlaceLabel(entry.location, entry.index),
+      kindByte:
+        (entry.location ?? this.locations[entry.index] ?? [])[4] ?? 0,
     }));
 
     return {
