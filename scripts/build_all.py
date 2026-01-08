@@ -80,6 +80,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip PBF extraction/merge and rebuild trie + tarball only.",
     )
+    parser.add_argument(
+        "--mini",
+        action="store_true",
+        help="Run the pipeline only for Switzerland (switzerland-latest.osm.pbf).",
+    )
     return parser.parse_args()
 
 
@@ -94,10 +99,25 @@ def main() -> int:
     tarball = build_dir / "street_trie.packed.tar.xz"
     shards_dir = build_dir / "shards"
 
+    if args.from_trie and args.mini:
+        print("--mini ignored when --from-trie is set.", file=sys.stderr)
+
     if not args.from_trie:
         csv_dir.mkdir(parents=True, exist_ok=True)
 
         pbfs = sorted(pbfs_dir.glob("*.pbf"))
+        if args.mini:
+            swiss_default = pbfs_dir / "switzerland-latest.osm.pbf"
+            if swiss_default.exists():
+                pbfs = [swiss_default]
+            else:
+                pbfs = [pbf for pbf in pbfs if "switzerland" in pbf.name.lower()]
+            if not pbfs:
+                print(
+                    f"Missing Switzerland PBF at {swiss_default}",
+                    file=sys.stderr,
+                )
+                return 1
         if not pbfs:
             print(f"No .pbf files found in {pbfs_dir}", file=sys.stderr)
             return 1
