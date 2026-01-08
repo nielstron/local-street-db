@@ -113,9 +113,9 @@ function addMarkers(entries) {
     if (kind === 10) {
       maxZoom = maxZoom === null ? 7 : Math.min(maxZoom, 7);
     } else if (kind === 9) {
-      maxZoom = maxZoom === null ? 10 : Math.min(maxZoom, 10);
+      maxZoom = maxZoom === null ? 12 : Math.min(maxZoom, 12);
     } else if (maxZoom === null) {
-      maxZoom = 14;
+      maxZoom = 18;
     }
     const marker = L.circleMarker([lat, lon], {
       radius: 6,
