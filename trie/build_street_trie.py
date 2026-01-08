@@ -218,6 +218,34 @@ def encode_varint(value: int) -> bytes:
     return bytes(out)
 
 
+def reindex_names(names: List[str]) -> Tuple[List[str], List[int]]:
+    indexed = list(enumerate(names))
+    indexed.sort(key=lambda item: item[1])
+    new_names = [name for _, name in indexed]
+    old_to_new = [0] * len(names)
+    for new_idx, (old_idx, _) in enumerate(indexed):
+        old_to_new[old_idx] = new_idx
+    return new_names, old_to_new
+
+
+def encode_prefix_table(names: List[str]) -> bytes:
+    out = bytearray()
+    prev_bytes = b""
+    out.extend(encode_varint(len(names)))
+    for name in names:
+        name_bytes = name.encode("utf-8")
+        prefix_len = 0
+        max_prefix = min(len(prev_bytes), len(name_bytes))
+        while prefix_len < max_prefix and prev_bytes[prefix_len] == name_bytes[prefix_len]:
+            prefix_len += 1
+        suffix = name_bytes[prefix_len:]
+        out.extend(encode_varint(prefix_len))
+        out.extend(encode_varint(len(suffix)))
+        out.extend(suffix)
+        prev_bytes = name_bytes
+    return bytes(out)
+
+
 def build_nodes(trie: Dict) -> List[Dict]:
     nodes: List[Dict] = []
 
@@ -289,22 +317,21 @@ def pack_trie(
 ) -> bytes:
     out = bytearray()
     out.extend(b"STRI")
-    out.append(7)
+    out.append(9)
     if scale < 0 or scale > 0xFFFFFF:
         raise ValueError("scale must fit in 3 bytes")
     out.extend(scale.to_bytes(3, "little", signed=False))
 
-    out.extend(encode_varint(len(node_names)))
-    for node_name in node_names:
-        node_bytes = node_name.encode("utf-8")
-        out.extend(encode_varint(len(node_bytes)))
-        out.extend(node_bytes)
+    re_nodes, node_index = reindex_names(node_names)
+    re_cities, city_index = reindex_names(city_names)
+    out.extend(encode_prefix_table(re_nodes))
+    out.extend(encode_prefix_table(re_cities))
 
-    out.extend(encode_varint(len(city_names)))
-    for city_name in city_names:
-        city_bytes = city_name.encode("utf-8")
-        out.extend(encode_varint(len(city_bytes)))
-        out.extend(city_bytes)
+    remapped_locations: List[Tuple[float, float, int, int]] = []
+    for lon, lat, node_idx, city_idx in locations:
+        remapped_locations.append(
+            (lon, lat, node_index[node_idx], city_index[city_idx])
+        )
 
     node_count, edge_count, bit_count, louds_bytes, edge_labels, values_per_node = build_louds(trie)
     out.extend(encode_varint(node_count))
@@ -319,7 +346,7 @@ def pack_trie(
     for values in values_per_node:
         out.extend(encode_varint(len(values)))
         for value in values:
-            lon, lat, node_idx, city_idx = locations[value]
+            lon, lat, node_idx, city_idx = remapped_locations[value]
             lon_i = int(round(lon * scale))
             lat_i = int(round(lat * scale))
             out.extend(lon_i.to_bytes(3, "little", signed=True))

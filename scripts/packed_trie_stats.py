@@ -80,11 +80,17 @@ SECTION_GROUPS = {
         "place_nodes.count_varint",
         "place_nodes.name_len_varint",
         "place_nodes.name_bytes",
+        "place_nodes.prefix_len_varint",
+        "place_nodes.suffix_len_varint",
+        "place_nodes.suffix_bytes",
     ],
     "place_cities": [
         "place_cities.count_varint",
         "place_cities.name_len_varint",
         "place_cities.name_bytes",
+        "place_cities.prefix_len_varint",
+        "place_cities.suffix_len_varint",
+        "place_cities.suffix_bytes",
     ],
     "locations": [
         "locations.count_varint",
@@ -136,10 +142,10 @@ def parse_packed_trie(data: bytes, collect_edges: bool = False) -> TrieStats:
     version = data[offset]
     stats.add("header.version", 1)
     offset += 1
-    if version not in (3, 4, 5, 6, 7):
+    if version not in (3, 4, 5, 6, 7, 9):
         raise ParseError(f"unsupported version {version}")
 
-    if version in (5, 6, 7):
+    if version in (5, 6, 7, 9):
         if offset + 3 > len(data):
             raise ParseError("unexpected EOF reading scale")
         scale = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16)
@@ -158,24 +164,46 @@ def parse_packed_trie(data: bytes, collect_edges: bool = False) -> TrieStats:
     place_node_count, offset, size = decode_varint(data, offset)
     stats.add("place_nodes.count_varint", size)
     stats.meta["place_nodes"] = place_node_count
-    for _ in range(place_node_count):
-        name_len, offset, size = decode_varint(data, offset)
-        stats.add("place_nodes.name_len_varint", size)
-        if offset + name_len > len(data):
-            raise ParseError("unexpected EOF reading place node name")
-        stats.add("place_nodes.name_bytes", name_len)
-        offset += name_len
+    if version >= 9:
+        for _ in range(place_node_count):
+            prefix_len, offset, size = decode_varint(data, offset)
+            stats.add("place_nodes.prefix_len_varint", size)
+            suffix_len, offset, size = decode_varint(data, offset)
+            stats.add("place_nodes.suffix_len_varint", size)
+            if offset + suffix_len > len(data):
+                raise ParseError("unexpected EOF reading place node suffix")
+            stats.add("place_nodes.suffix_bytes", suffix_len)
+            offset += suffix_len
+    else:
+        for _ in range(place_node_count):
+            name_len, offset, size = decode_varint(data, offset)
+            stats.add("place_nodes.name_len_varint", size)
+            if offset + name_len > len(data):
+                raise ParseError("unexpected EOF reading place node name")
+            stats.add("place_nodes.name_bytes", name_len)
+            offset += name_len
 
     city_count, offset, size = decode_varint(data, offset)
     stats.add("place_cities.count_varint", size)
     stats.meta["place_cities"] = city_count
-    for _ in range(city_count):
-        name_len, offset, size = decode_varint(data, offset)
-        stats.add("place_cities.name_len_varint", size)
-        if offset + name_len > len(data):
-            raise ParseError("unexpected EOF reading city name")
-        stats.add("place_cities.name_bytes", name_len)
-        offset += name_len
+    if version >= 9:
+        for _ in range(city_count):
+            prefix_len, offset, size = decode_varint(data, offset)
+            stats.add("place_cities.prefix_len_varint", size)
+            suffix_len, offset, size = decode_varint(data, offset)
+            stats.add("place_cities.suffix_len_varint", size)
+            if offset + suffix_len > len(data):
+                raise ParseError("unexpected EOF reading city suffix")
+            stats.add("place_cities.suffix_bytes", suffix_len)
+            offset += suffix_len
+    else:
+        for _ in range(city_count):
+            name_len, offset, size = decode_varint(data, offset)
+            stats.add("place_cities.name_len_varint", size)
+            if offset + name_len > len(data):
+                raise ParseError("unexpected EOF reading city name")
+            stats.add("place_cities.name_bytes", name_len)
+            offset += name_len
 
     if version <= 5:
         loc_count, offset, size = decode_varint(data, offset)
@@ -211,7 +239,7 @@ def parse_packed_trie(data: bytes, collect_edges: bool = False) -> TrieStats:
             stats.add("label_table.label_bytes", label_len)
             offset += label_len
 
-    if version == 7:
+    if version in (7, 9):
         node_count, offset, size = decode_varint(data, offset)
         stats.add("louds.node_count_varint", size)
         stats.meta["trie_nodes"] = node_count

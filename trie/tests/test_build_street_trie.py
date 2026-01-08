@@ -121,23 +121,27 @@ def test_pack_trie_binary_format() -> None:
     )
 
     assert data[:4] == b"STRI"
-    assert data[4] == 7
+    assert data[4] == 9
     scale = data[5] | (data[6] << 8) | (data[7] << 16)
     assert scale == 10_000
     offset = 8
 
     node_count, offset = decode_varint(data, offset)
     assert node_count == 1
-    node_len, offset = decode_varint(data, offset)
-    node = data[offset : offset + node_len].decode("utf-8")
-    offset += node_len
+    node_prefix, offset = decode_varint(data, offset)
+    node_suffix_len, offset = decode_varint(data, offset)
+    node = data[offset : offset + node_suffix_len].decode("utf-8")
+    offset += node_suffix_len
+    assert node_prefix == 0
     assert node == ""
 
     city_count, offset = decode_varint(data, offset)
     assert city_count == 1
-    city_len, offset = decode_varint(data, offset)
-    city = data[offset : offset + city_len].decode("utf-8")
-    offset += city_len
+    city_prefix, offset = decode_varint(data, offset)
+    city_suffix_len, offset = decode_varint(data, offset)
+    city = data[offset : offset + city_suffix_len].decode("utf-8")
+    offset += city_suffix_len
+    assert city_prefix == 0
     assert city == "Testville"
 
     trie_node_count, offset = decode_varint(data, offset)

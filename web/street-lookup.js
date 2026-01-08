@@ -21,6 +21,29 @@ function decodeInt24(view, offset) {
   return [value, offset + 3];
 }
 
+function decodePrefixTable(view, offset, buffer) {
+  let count;
+  [count, offset] = decodeVarint(view, offset);
+  const list = new Array(count);
+  let prev = new Uint8Array(0);
+  for (let i = 0; i < count; i++) {
+    let prefixLen;
+    [prefixLen, offset] = decodeVarint(view, offset);
+    let suffixLen;
+    [suffixLen, offset] = decodeVarint(view, offset);
+    const suffixBytes = new Uint8Array(buffer, offset, suffixLen);
+    offset += suffixLen;
+    const bytes = new Uint8Array(prefixLen + suffixLen);
+    if (prefixLen > 0) {
+      bytes.set(prev.subarray(0, prefixLen), 0);
+    }
+    bytes.set(suffixBytes, prefixLen);
+    list[i] = new TextDecoder("utf-8").decode(bytes);
+    prev = bytes;
+  }
+  return [list, offset];
+}
+
 function decodePackedTrie(buffer) {
   const view = new DataView(buffer);
   const magic = String.fromCharCode(
@@ -33,12 +56,12 @@ function decodePackedTrie(buffer) {
     throw new Error("Invalid trie file");
   }
   const version = view.getUint8(4);
-  if (version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) {
+  if (version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 9) {
     throw new Error(`Unsupported version ${version}`);
   }
   let scale;
   let offset;
-  if (version === 5 || version === 6 || version === 7) {
+  if (version === 5 || version === 6 || version === 7 || version === 9) {
     scale =
       view.getUint8(5) |
       (view.getUint8(6) << 8) |
@@ -49,28 +72,35 @@ function decodePackedTrie(buffer) {
     offset = 9;
   }
 
-  let placeNodeCount;
-  [placeNodeCount, offset] = decodeVarint(view, offset);
-  const nodeList = new Array(placeNodeCount);
-  for (let i = 0; i < placeNodeCount; i++) {
-    let nodeLen;
-    [nodeLen, offset] = decodeVarint(view, offset);
-    const bytes = new Uint8Array(buffer, offset, nodeLen);
-    const node = new TextDecoder("utf-8").decode(bytes);
-    offset += nodeLen;
-    nodeList[i] = node;
-  }
+  let nodeList = null;
+  let cityList = null;
+  if (version >= 9) {
+    [nodeList, offset] = decodePrefixTable(view, offset, buffer);
+    [cityList, offset] = decodePrefixTable(view, offset, buffer);
+  } else {
+    let placeNodeCount;
+    [placeNodeCount, offset] = decodeVarint(view, offset);
+    nodeList = new Array(placeNodeCount);
+    for (let i = 0; i < placeNodeCount; i++) {
+      let nodeLen;
+      [nodeLen, offset] = decodeVarint(view, offset);
+      const bytes = new Uint8Array(buffer, offset, nodeLen);
+      const node = new TextDecoder("utf-8").decode(bytes);
+      offset += nodeLen;
+      nodeList[i] = node;
+    }
 
-  let cityCount;
-  [cityCount, offset] = decodeVarint(view, offset);
-  const cityList = new Array(cityCount);
-  for (let i = 0; i < cityCount; i++) {
-    let cityLen;
-    [cityLen, offset] = decodeVarint(view, offset);
-    const bytes = new Uint8Array(buffer, offset, cityLen);
-    const city = new TextDecoder("utf-8").decode(bytes);
-    offset += cityLen;
-    cityList[i] = city;
+    let cityCount;
+    [cityCount, offset] = decodeVarint(view, offset);
+    cityList = new Array(cityCount);
+    for (let i = 0; i < cityCount; i++) {
+      let cityLen;
+      [cityLen, offset] = decodeVarint(view, offset);
+      const bytes = new Uint8Array(buffer, offset, cityLen);
+      const city = new TextDecoder("utf-8").decode(bytes);
+      offset += cityLen;
+      cityList[i] = city;
+    }
   }
 
   let locs = [];
@@ -117,7 +147,7 @@ function decodePackedTrie(buffer) {
   let nodeCount;
   [nodeCount, offset] = decodeVarint(view, offset);
   const nodes = new Array(nodeCount);
-  if (version === 7) {
+  if (version >= 7) {
     let loudsBitCount;
     [loudsBitCount, offset] = decodeVarint(view, offset);
     const loudsByteCount = Math.ceil(loudsBitCount / 8);
