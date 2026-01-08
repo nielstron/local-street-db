@@ -18,8 +18,10 @@ KIND_TO_BYTE = {
     "museum": 6,
     "civic_building": 7,
     "sight": 8,
+    "city": 9,
 }
 DEFAULT_KIND_BYTE = 15
+CITY_KIND_BYTE = KIND_TO_BYTE["city"]
 
 
 def find_default_csv(folder: Path) -> Path:
@@ -36,6 +38,28 @@ def insert_trie(trie: Dict, key: str, index: int) -> None:
     for ch in key:
         node = node.setdefault(ch, {})
     node.setdefault(TERMINAL_KEY, []).append(index)
+
+
+def add_location_entry(
+    trie: Dict,
+    name: str,
+    lon: float,
+    lat: float,
+    node_idx: int,
+    city_idx: int,
+    kind_byte: int,
+    locations: List[Tuple[float, float, int, int, int]],
+    location_index: Dict[Tuple[float, float, int, int, int], int],
+) -> None:
+    if not name:
+        return
+    loc_key = (lon, lat, node_idx, city_idx, kind_byte)
+    index = location_index.get(loc_key)
+    if index is None:
+        index = len(locations)
+        location_index[loc_key] = index
+        locations.append((lon, lat, node_idx, city_idx, kind_byte))
+    insert_trie(trie, name, index)
 
 
 def compress_trie(trie: Dict) -> Dict:
@@ -70,7 +94,7 @@ def build_trie(
     input_path: Path,
 ) -> Tuple[List[Tuple[float, float, int, int, int]], List[str], List[str], Dict]:
     locations: List[Tuple[float, float, int, int, int]] = []
-    location_index: Dict[Tuple[float, float], int] = {}
+    location_index: Dict[Tuple[float, float, int, int, int], int] = {}
     node_names: List[str] = [""]
     node_index: Dict[str, int] = {"": 0}
     city_names: List[str] = [""]
@@ -114,14 +138,45 @@ def build_trie(
 
             kind_str = (row.get("kind") or "").strip().lower()
             kind_byte = KIND_TO_BYTE.get(kind_str, DEFAULT_KIND_BYTE)
+            add_location_entry(
+                trie,
+                name,
+                lon,
+                lat,
+                node_idx,
+                city_idx,
+                kind_byte,
+                locations,
+                location_index,
+            )
 
-            loc_key = (lon, lat, node_idx, city_idx, kind_byte)
-            index = location_index.get(loc_key)
-            if index is None:
-                index = len(locations)
-                location_index[loc_key] = index
-                locations.append((lon, lat, node_idx, city_idx, kind_byte))
-            insert_trie(trie, name, index)
+            city_name = (row.get("city_place_city") or "").strip()
+            add_location_entry(
+                trie,
+                city_name,
+                lon,
+                lat,
+                0,
+                city_idx,
+                CITY_KIND_BYTE,
+                locations,
+                location_index,
+            )
+
+            place_type = (row.get("city_place_type") or "").strip().lower()
+            if place_type == "suburb":
+                suburb_name = (row.get("city_place_node") or "").strip()
+                add_location_entry(
+                    trie,
+                    suburb_name,
+                    lon,
+                    lat,
+                    node_idx,
+                    city_idx,
+                    CITY_KIND_BYTE,
+                    locations,
+                    location_index,
+                )
     return locations, node_names, city_names, trie
 
 
@@ -208,14 +263,45 @@ def build_trie_shards(
 
             kind_str = (row.get("kind") or "").strip().lower()
             kind_byte = KIND_TO_BYTE.get(kind_str, DEFAULT_KIND_BYTE)
+            add_location_entry(
+                shard["trie"],
+                name,
+                lon,
+                lat,
+                node_idx,
+                city_idx,
+                kind_byte,
+                shard["locations"],
+                shard["location_index"],
+            )
 
-            loc_key = (lon, lat, node_idx, city_idx, kind_byte)
-            index = shard["location_index"].get(loc_key)
-            if index is None:
-                index = len(shard["locations"])
-                shard["location_index"][loc_key] = index
-                shard["locations"].append((lon, lat, node_idx, city_idx, kind_byte))
-            insert_trie(shard["trie"], name, index)
+            city_name = (row.get("city_place_city") or "").strip()
+            add_location_entry(
+                shard["trie"],
+                city_name,
+                lon,
+                lat,
+                0,
+                city_idx,
+                CITY_KIND_BYTE,
+                shard["locations"],
+                shard["location_index"],
+            )
+
+            place_type = (row.get("city_place_type") or "").strip().lower()
+            if place_type == "suburb":
+                suburb_name = (row.get("city_place_node") or "").strip()
+                add_location_entry(
+                    shard["trie"],
+                    suburb_name,
+                    lon,
+                    lat,
+                    node_idx,
+                    city_idx,
+                    CITY_KIND_BYTE,
+                    shard["locations"],
+                    shard["location_index"],
+                )
 
     for shard in shards.values():
         shard.pop("location_index", None)

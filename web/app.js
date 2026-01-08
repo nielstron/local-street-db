@@ -31,9 +31,10 @@ const KIND_LABELS = {
   6: { label: "Museum", emoji: "🏛️" },
   7: { label: "Civic building", emoji: "🏛️" },
   8: { label: "Sight", emoji: "📍" },
+  9: { label: "City", emoji: "🏙️" },
   15: { label: "Other", emoji: "•" },
 };
-const KIND_ORDER = [0, 1, 2, 3, 4, 5, 6, 7, 8, 15];
+const KIND_ORDER = [0, 9, 1, 2, 3, 4, 5, 6, 7, 8, 15];
 
 function renderFilters() {
   if (!filtersEl) return;

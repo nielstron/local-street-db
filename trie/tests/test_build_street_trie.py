@@ -188,22 +188,35 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
                 "center_lon",
                 "center_lat",
                 "city_place_node",
+                "city_place_type",
                 "city_place_city",
             ]
         )
-        writer.writerow(["Main St", "street", "1.0", "2.0", "Node A", "City A"])
-        writer.writerow(["Main St", "street", "1.0", "2.0", "Node A", "City A"])
-        writer.writerow(["Main St", "street", "3.0", "4.0", "Node B", "City B"])
-        writer.writerow(["Second St", "bus_stop", "5.0", "6.0", "", "City C"])
+        writer.writerow(["Main St", "street", "1.0", "2.0", "Node A", "city", "City A"])
+        writer.writerow(["Main St", "street", "1.0", "2.0", "Node A", "city", "City A"])
+        writer.writerow(["Main St", "street", "3.0", "4.0", "Node B", "city", "City B"])
+        writer.writerow(["Second St", "bus_stop", "5.0", "6.0", "", "city", "City C"])
+        writer.writerow(["Third St", "street", "7.0", "8.0", "Suburb A", "suburb", "City A"])
 
     locations, nodes, cities, trie = build_trie(csv_path)
     assert locations == [
         (1.0, 2.0, 1, 1, 0),
+        (1.0, 2.0, 0, 1, 9),
         (3.0, 4.0, 2, 2, 0),
+        (3.0, 4.0, 0, 2, 9),
         (5.0, 6.0, 0, 3, 3),
+        (5.0, 6.0, 0, 3, 9),
+        (7.0, 8.0, 3, 1, 0),
+        (7.0, 8.0, 0, 1, 9),
+        (7.0, 8.0, 3, 1, 9),
     ]
-    assert nodes == ["", "Node A", "Node B"]
+    assert nodes == ["", "Node A", "Node B", "Suburb A"]
     assert cities == ["", "City A", "City B", "City C"]
     compressed = compress_trie(trie)
-    assert lookup_trie(compressed, "Main St") == [0, 0, 1]
-    assert lookup_trie(compressed, "Second St") == [2]
+    assert lookup_trie(compressed, "Main St") == [0, 0, 2]
+    assert lookup_trie(compressed, "Second St") == [4]
+    assert lookup_trie(compressed, "Third St") == [6]
+    assert lookup_trie(compressed, "City A") == [1, 1, 7]
+    assert lookup_trie(compressed, "City B") == [3]
+    assert lookup_trie(compressed, "City C") == [5]
+    assert lookup_trie(compressed, "Suburb A") == [8]
