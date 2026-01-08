@@ -33,12 +33,12 @@ function decodePackedTrie(buffer) {
     throw new Error("Invalid trie file");
   }
   const version = view.getUint8(4);
-  if (version !== 3 && version !== 4 && version !== 5 && version !== 6) {
+  if (version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) {
     throw new Error(`Unsupported version ${version}`);
   }
   let scale;
   let offset;
-  if (version === 5 || version === 6) {
+  if (version === 5 || version === 6 || version === 7) {
     scale =
       view.getUint8(5) |
       (view.getUint8(6) << 8) |
@@ -117,33 +117,30 @@ function decodePackedTrie(buffer) {
   let nodeCount;
   [nodeCount, offset] = decodeVarint(view, offset);
   const nodes = new Array(nodeCount);
-  for (let i = 0; i < nodeCount; i++) {
+  if (version === 7) {
+    let loudsBitCount;
+    [loudsBitCount, offset] = decodeVarint(view, offset);
+    const loudsByteCount = Math.ceil(loudsBitCount / 8);
+    const loudsBytes = new Uint8Array(buffer, offset, loudsByteCount);
+    offset += loudsByteCount;
+
     let edgeCount;
     [edgeCount, offset] = decodeVarint(view, offset);
-    const edges = [];
-    for (let e = 0; e < edgeCount; e++) {
-      let label;
-      if (version === 4) {
-        let labelIdx;
-        [labelIdx, offset] = decodeVarint(view, offset);
-        label = labelTable[labelIdx] || "";
-      } else {
-        let labelLen;
-        [labelLen, offset] = decodeVarint(view, offset);
-        const bytes = new Uint8Array(buffer, offset, labelLen);
-        label = new TextDecoder("utf-8").decode(bytes);
-        offset += labelLen;
-      }
-      let childIdx;
-      [childIdx, offset] = decodeVarint(view, offset);
-      edges.push({ label, child: childIdx });
+    const edgeLabels = new Array(edgeCount);
+    for (let i = 0; i < edgeCount; i++) {
+      let labelLen;
+      [labelLen, offset] = decodeVarint(view, offset);
+      const bytes = new Uint8Array(buffer, offset, labelLen);
+      edgeLabels[i] = new TextDecoder("utf-8").decode(bytes);
+      offset += labelLen;
     }
 
-    let valuesCount;
-    [valuesCount, offset] = decodeVarint(view, offset);
-    const values = [];
-    for (let v = 0; v < valuesCount; v++) {
-      if (version === 6) {
+    const valuesPerNode = new Array(nodeCount);
+    for (let i = 0; i < nodeCount; i++) {
+      let valuesCount;
+      [valuesCount, offset] = decodeVarint(view, offset);
+      const values = [];
+      for (let v = 0; v < valuesCount; v++) {
         let lon;
         let lat;
         [lon, offset] = decodeInt24(view, offset);
@@ -154,13 +151,84 @@ function decodePackedTrie(buffer) {
         [cityIdx, offset] = decodeVarint(view, offset);
         values.push([lon / scale, lat / scale, nodeIdx, cityIdx]);
         locationsCount += 1;
+      }
+      valuesPerNode[i] = values;
+    }
+
+    let currentNode = 0;
+    let edgeIdx = 0;
+    for (let bitIndex = 0; bitIndex < loudsBitCount; bitIndex++) {
+      const byte = loudsBytes[bitIndex >> 3];
+      const bit = (byte >> (bitIndex & 7)) & 1;
+      if (bit === 1) {
+        const childIdx = edgeIdx + 1;
+        const label = edgeLabels[edgeIdx] || "";
+        if (!nodes[currentNode]) {
+          nodes[currentNode] = { edges: [], values: valuesPerNode[currentNode] || [] };
+        }
+        nodes[currentNode].edges.push({ label, child: childIdx });
+        edgeIdx += 1;
       } else {
-        let value;
-        [value, offset] = decodeVarint(view, offset);
-        values.push(value);
+        if (!nodes[currentNode]) {
+          nodes[currentNode] = { edges: [], values: valuesPerNode[currentNode] || [] };
+        }
+        currentNode += 1;
+        if (currentNode >= nodeCount) {
+          break;
+        }
       }
     }
-    nodes[i] = { edges, values };
+    for (let i = 0; i < nodeCount; i++) {
+      if (!nodes[i]) {
+        nodes[i] = { edges: [], values: valuesPerNode[i] || [] };
+      }
+    }
+  } else {
+    for (let i = 0; i < nodeCount; i++) {
+      let edgeCount;
+      [edgeCount, offset] = decodeVarint(view, offset);
+      const edges = [];
+      for (let e = 0; e < edgeCount; e++) {
+        let label;
+        if (version === 4) {
+          let labelIdx;
+          [labelIdx, offset] = decodeVarint(view, offset);
+          label = labelTable[labelIdx] || "";
+        } else {
+          let labelLen;
+          [labelLen, offset] = decodeVarint(view, offset);
+          const bytes = new Uint8Array(buffer, offset, labelLen);
+          label = new TextDecoder("utf-8").decode(bytes);
+          offset += labelLen;
+        }
+        let childIdx;
+        [childIdx, offset] = decodeVarint(view, offset);
+        edges.push({ label, child: childIdx });
+      }
+
+      let valuesCount;
+      [valuesCount, offset] = decodeVarint(view, offset);
+      const values = [];
+      for (let v = 0; v < valuesCount; v++) {
+        if (version === 6) {
+          let lon;
+          let lat;
+          [lon, offset] = decodeInt24(view, offset);
+          [lat, offset] = decodeInt24(view, offset);
+          let nodeIdx;
+          [nodeIdx, offset] = decodeVarint(view, offset);
+          let cityIdx;
+          [cityIdx, offset] = decodeVarint(view, offset);
+          values.push([lon / scale, lat / scale, nodeIdx, cityIdx]);
+          locationsCount += 1;
+        } else {
+          let value;
+          [value, offset] = decodeVarint(view, offset);
+          values.push(value);
+        }
+      }
+      nodes[i] = { edges, values };
+    }
   }
 
   return {

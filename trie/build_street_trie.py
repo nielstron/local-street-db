@@ -245,6 +245,41 @@ def build_nodes(trie: Dict) -> List[Dict]:
     return nodes
 
 
+def build_louds(trie: Dict) -> Tuple[int, int, int, bytes, List[str], List[List[int]]]:
+    queue: List[Dict] = [trie]
+    louds_bits: List[int] = []
+    edge_labels: List[str] = []
+    values_per_node: List[List[int]] = []
+
+    while queue:
+        node = queue.pop(0)
+        values = node.get(TERMINAL_KEY, [])
+        values_per_node.append(list(values))
+
+        edges = []
+        for edge_label, child in node.items():
+            if edge_label == TERMINAL_KEY:
+                continue
+            edges.append((edge_label, child))
+        edges.sort(key=lambda item: item[0])
+
+        for edge_label, child in edges:
+            edge_labels.append(edge_label)
+            queue.append(child)
+            louds_bits.append(1)
+        louds_bits.append(0)
+
+    node_count = len(values_per_node)
+    edge_count = len(edge_labels)
+    bit_count = len(louds_bits)
+    louds_bytes = bytearray((bit_count + 7) // 8)
+    for i, bit in enumerate(louds_bits):
+        if bit:
+            louds_bytes[i >> 3] |= 1 << (i & 7)
+
+    return node_count, edge_count, bit_count, bytes(louds_bytes), edge_labels, values_per_node
+
+
 def pack_trie(
     locations: List[Tuple[float, float, int, int]],
     node_names: List[str],
@@ -254,7 +289,7 @@ def pack_trie(
 ) -> bytes:
     out = bytearray()
     out.extend(b"STRI")
-    out.append(6)
+    out.append(7)
     if scale < 0 or scale > 0xFFFFFF:
         raise ValueError("scale must fit in 3 bytes")
     out.extend(scale.to_bytes(3, "little", signed=False))
@@ -271,18 +306,17 @@ def pack_trie(
         out.extend(encode_varint(len(city_bytes)))
         out.extend(city_bytes)
 
-    nodes = build_nodes(trie)
-    out.extend(encode_varint(len(nodes)))
-    for node in nodes:
-        edges = node["edges"]
-        out.extend(encode_varint(len(edges)))
-        for label, child_idx in edges:
-            label_bytes = label.encode("utf-8")
-            out.extend(encode_varint(len(label_bytes)))
-            out.extend(label_bytes)
-            out.extend(encode_varint(child_idx))
+    node_count, edge_count, bit_count, louds_bytes, edge_labels, values_per_node = build_louds(trie)
+    out.extend(encode_varint(node_count))
+    out.extend(encode_varint(bit_count))
+    out.extend(louds_bytes)
+    out.extend(encode_varint(edge_count))
+    for label in edge_labels:
+        label_bytes = label.encode("utf-8")
+        out.extend(encode_varint(len(label_bytes)))
+        out.extend(label_bytes)
 
-        values = node["values"]
+    for values in values_per_node:
         out.extend(encode_varint(len(values)))
         for value in values:
             lon, lat, node_idx, city_idx = locations[value]

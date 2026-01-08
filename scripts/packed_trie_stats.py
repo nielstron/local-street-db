@@ -31,6 +31,20 @@ def decode_varint(data: bytes, offset: int) -> Tuple[int, int, int]:
     return value, offset, offset - start
 
 
+def encode_varint(value: int) -> bytes:
+    out = bytearray()
+    v = value
+    while True:
+        byte = v & 0x7F
+        v >>= 7
+        if v:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            break
+    return bytes(out)
+
+
 def maybe_gunzip(data: bytes) -> Tuple[bytes, bool]:
     if len(data) >= 2 and data[0] == 0x1F and data[1] == 0x8B:
         return gzip.decompress(data), True
@@ -45,6 +59,7 @@ class TrieStats:
     scale: int = 0
     total_bytes: int = 0
     parsed_bytes: int = 0
+    estimates: Dict[str, int] = field(default_factory=dict)
 
     def add(self, key: str, count: int) -> None:
         if count:
@@ -82,6 +97,11 @@ SECTION_GROUPS = {
         "label_table.label_len_varint",
         "label_table.label_bytes",
     ],
+    "louds": [
+        "louds.node_count_varint",
+        "louds.bit_count_varint",
+        "louds.bitvector_bytes",
+    ],
     "trie_edges": [
         "trie.nodes.count_varint",
         "trie.edges.count_varint",
@@ -89,6 +109,9 @@ SECTION_GROUPS = {
         "trie.edges.label_bytes",
         "trie.edges.label_idx_varint",
         "trie.edges.child_idx_varint",
+        "trie.edges.count_varint_louds",
+        "trie.edges.label_len_varint_louds",
+        "trie.edges.label_bytes_louds",
     ],
     "trie_values": [
         "trie.values.count_varint",
@@ -97,7 +120,7 @@ SECTION_GROUPS = {
 }
 
 
-def parse_packed_trie(data: bytes) -> TrieStats:
+def parse_packed_trie(data: bytes, collect_edges: bool = False) -> TrieStats:
     stats = TrieStats()
     offset = 0
 
@@ -113,10 +136,10 @@ def parse_packed_trie(data: bytes) -> TrieStats:
     version = data[offset]
     stats.add("header.version", 1)
     offset += 1
-    if version not in (3, 4, 5, 6):
+    if version not in (3, 4, 5, 6, 7):
         raise ParseError(f"unsupported version {version}")
 
-    if version in (5, 6):
+    if version in (5, 6, 7):
         if offset + 3 > len(data):
             raise ParseError("unexpected EOF reading scale")
         scale = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16)
@@ -188,34 +211,36 @@ def parse_packed_trie(data: bytes) -> TrieStats:
             stats.add("label_table.label_bytes", label_len)
             offset += label_len
 
-    node_count, offset, size = decode_varint(data, offset)
-    stats.add("trie.nodes.count_varint", size)
-    stats.meta["trie_nodes"] = node_count
-    edge_total = 0
-    value_total = 0
-    for _ in range(node_count):
-        edge_count, offset, size = decode_varint(data, offset)
-        stats.add("trie.edges.count_varint", size)
-        edge_total += edge_count
-        for _ in range(edge_count):
-            if version == 4:
-                _, offset, size = decode_varint(data, offset)
-                stats.add("trie.edges.label_idx_varint", size)
-            else:
-                label_len, offset, size = decode_varint(data, offset)
-                stats.add("trie.edges.label_len_varint", size)
-                if offset + label_len > len(data):
-                    raise ParseError("unexpected EOF reading edge label")
-                stats.add("trie.edges.label_bytes", label_len)
-                offset += label_len
-            _, offset, size = decode_varint(data, offset)
-            stats.add("trie.edges.child_idx_varint", size)
+    if version == 7:
+        node_count, offset, size = decode_varint(data, offset)
+        stats.add("louds.node_count_varint", size)
+        stats.meta["trie_nodes"] = node_count
 
-        values_count, offset, size = decode_varint(data, offset)
-        stats.add("trie.values.count_varint", size)
-        value_total += values_count
-        for _ in range(values_count):
-            if version == 6:
+        louds_bit_count, offset, size = decode_varint(data, offset)
+        stats.add("louds.bit_count_varint", size)
+        louds_byte_count = (louds_bit_count + 7) // 8
+        if offset + louds_byte_count > len(data):
+            raise ParseError("unexpected EOF reading louds bitvector")
+        stats.add("louds.bitvector_bytes", louds_byte_count)
+        offset += louds_byte_count
+
+        edge_count, offset, size = decode_varint(data, offset)
+        stats.add("trie.edges.count_varint_louds", size)
+        edge_total = edge_count
+        for _ in range(edge_count):
+            label_len, offset, size = decode_varint(data, offset)
+            stats.add("trie.edges.label_len_varint_louds", size)
+            if offset + label_len > len(data):
+                raise ParseError("unexpected EOF reading edge label")
+            stats.add("trie.edges.label_bytes_louds", label_len)
+            offset += label_len
+
+        value_total = 0
+        for _ in range(node_count):
+            values_count, offset, size = decode_varint(data, offset)
+            stats.add("trie.values.count_varint", size)
+            value_total += values_count
+            for _ in range(values_count):
                 if offset + 6 > len(data):
                     raise ParseError("unexpected EOF reading inline location lon/lat")
                 stats.add("locations.lonlat_bytes", 6)
@@ -224,14 +249,95 @@ def parse_packed_trie(data: bytes) -> TrieStats:
                 stats.add("locations.node_idx_varint", size)
                 _, offset, size = decode_varint(data, offset)
                 stats.add("locations.city_idx_varint", size)
-            else:
-                _, offset, size = decode_varint(data, offset)
-                stats.add("trie.values.value_varint", size)
+    else:
+        node_count, offset, size = decode_varint(data, offset)
+        stats.add("trie.nodes.count_varint", size)
+        stats.meta["trie_nodes"] = node_count
+        edge_total = 0
+        value_total = 0
+        if collect_edges:
+            label_counts: Counter = Counter()
+            label_bytes_total = 0
+            label_len_varints_total = 0
+            label_idx_varints_total = 0
+            child_varints_total = 0
+            child_delta_varints_total = 0
+        for _ in range(node_count):
+            edge_count, offset, size = decode_varint(data, offset)
+            stats.add("trie.edges.count_varint", size)
+            edge_total += edge_count
+            prev_child = 0
+            for _ in range(edge_count):
+                if version == 4:
+                    label_idx, offset, size = decode_varint(data, offset)
+                    stats.add("trie.edges.label_idx_varint", size)
+                    if collect_edges:
+                        label_idx_varints_total += size
+                else:
+                    label_len, offset, size = decode_varint(data, offset)
+                    stats.add("trie.edges.label_len_varint", size)
+                    if offset + label_len > len(data):
+                        raise ParseError("unexpected EOF reading edge label")
+                    if collect_edges:
+                        label_len_varints_total += size
+                        label_bytes = data[offset : offset + label_len]
+                        label_counts[label_bytes] += 1
+                        label_bytes_total += label_len
+                    stats.add("trie.edges.label_bytes", label_len)
+                    offset += label_len
+                child_idx, offset, size = decode_varint(data, offset)
+                stats.add("trie.edges.child_idx_varint", size)
+                if collect_edges:
+                    child_varints_total += size
+                    delta = child_idx - prev_child
+                    if delta < 0:
+                        delta = child_idx
+                    _, _, delta_size = decode_varint(encode_varint(delta), 0)
+                    child_delta_varints_total += delta_size
+                    prev_child = child_idx
+
+            values_count, offset, size = decode_varint(data, offset)
+            stats.add("trie.values.count_varint", size)
+            value_total += values_count
+            for _ in range(values_count):
+                if version == 6:
+                    if offset + 6 > len(data):
+                        raise ParseError("unexpected EOF reading inline location lon/lat")
+                    stats.add("locations.lonlat_bytes", 6)
+                    offset += 6
+                    _, offset, size = decode_varint(data, offset)
+                    stats.add("locations.node_idx_varint", size)
+                    _, offset, size = decode_varint(data, offset)
+                    stats.add("locations.city_idx_varint", size)
+                else:
+                    _, offset, size = decode_varint(data, offset)
+                    stats.add("trie.values.value_varint", size)
 
     stats.meta["trie_edges"] = edge_total
     stats.meta["trie_values"] = value_total
-    if version == 6:
+    if version in (6, 7):
         stats.meta["locations"] = value_total
+    if collect_edges and version != 7:
+        stats.estimates["edges.label_bytes_inline"] = label_bytes_total
+        stats.estimates["edges.label_len_varints_inline"] = label_len_varints_total
+        stats.estimates["edges.child_varints_inline"] = child_varints_total
+        if label_counts:
+            label_index_sizes = []
+            for idx, (label, count) in enumerate(
+                sorted(label_counts.items(), key=lambda kv: kv[1], reverse=True)
+            ):
+                size = len(encode_varint(idx))
+                label_index_sizes.append(size * count)
+            stats.estimates["edges.label_idx_varints_table"] = sum(label_index_sizes)
+        else:
+            stats.estimates["edges.label_idx_varints_table"] = label_idx_varints_total
+        label_table_bytes = sum(len(label) for label in label_counts.keys())
+        label_table_len_varints = sum(len(encode_varint(len(label))) for label in label_counts.keys())
+        label_table_count_varint = len(encode_varint(len(label_counts)))
+        stats.estimates["label_table.bytes"] = label_table_bytes
+        stats.estimates["label_table.len_varints"] = label_table_len_varints
+        stats.estimates["label_table.count_varint"] = label_table_count_varint
+        stats.estimates["edges.child_varints_delta"] = child_delta_varints_total
 
     stats.total_bytes = len(data)
     stats.parsed_bytes = offset
@@ -287,6 +393,10 @@ def render_stats(parsed: ParsedTrie) -> str:
         lines.append(
             f"    {section:14} {format_bytes(count):>12} bytes  {pct:6.2f}%"
         )
+    if stats.estimates:
+        lines.append("  estimates:")
+        for key, count in sorted(stats.estimates.items()):
+            lines.append(f"    {key:30} {format_bytes(count):>12} bytes")
     return "\n".join(lines)
 
 
@@ -327,6 +437,11 @@ def main() -> None:
         help="Print a breakdown for each shard.",
     )
     parser.add_argument(
+        "--edge-estimates",
+        action="store_true",
+        help="Estimate savings from label table and child index deltas.",
+    )
+    parser.add_argument(
         "--no-progress",
         action="store_true",
         help="Disable progress output.",
@@ -353,7 +468,7 @@ def main() -> None:
             sys.stderr.flush()
         raw = shard_path.read_bytes()
         uncompressed, is_gz = maybe_gunzip(raw)
-        stats = parse_packed_trie(uncompressed)
+        stats = parse_packed_trie(uncompressed, collect_edges=args.edge_estimates)
         parsed = ParsedTrie(
             stats=stats,
             is_gz=is_gz,
@@ -368,6 +483,9 @@ def main() -> None:
         totals.total_bytes += stats.total_bytes
         totals.parsed_bytes += stats.parsed_bytes
         totals.bytes_by_section.update(stats.bytes_by_section)
+        if stats.estimates:
+            for key, count in stats.estimates.items():
+                totals.estimates[key] = totals.estimates.get(key, 0) + count
         total_compressed += len(raw)
         total_uncompressed += stats.total_bytes
         total_edges += stats.meta.get("trie_edges", 0)
@@ -412,6 +530,10 @@ def main() -> None:
     for section, count in sorted(grouped.items(), key=lambda kv: kv[1], reverse=True):
         pct = (count / totals.total_bytes * 100.0) if totals.total_bytes else 0.0
         print(f"    {section:14} {format_bytes(count):>12} bytes  {pct:6.2f}%")
+    if totals.estimates:
+        print("  estimates:")
+        for key, count in sorted(totals.estimates.items()):
+            print(f"    {key:30} {format_bytes(count):>12} bytes")
 
 
 if __name__ == "__main__":
