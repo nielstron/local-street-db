@@ -368,6 +368,52 @@ fn is_bus_stop(tags: &Tags) -> bool {
         || has_tag_value(tags, "public_transport", &["platform", "stop_position"])
 }
 
+fn is_ferry_terminal(tags: &Tags) -> bool {
+    has_tag_value(tags, "amenity", &["ferry_terminal"])
+        || has_tag_value(tags, "seamark:type", &["ferry_terminal"])
+}
+
+fn is_university(tags: &Tags) -> bool {
+    has_tag_value(tags, "amenity", &["university", "college"])
+        || has_tag_value(tags, "education", &["university", "college"])
+        || has_tag_value(tags, "building", &["university", "college"])
+}
+
+fn is_museum(tags: &Tags) -> bool {
+    has_tag_value(tags, "tourism", &["museum"])
+        || has_tag_value(tags, "amenity", &["museum"])
+        || has_tag_value(tags, "building", &["museum"])
+}
+
+fn is_civic_building(tags: &Tags) -> bool {
+    has_tag_value(
+        tags,
+        "amenity",
+        &[
+            "library",
+            "theatre",
+            "arts_centre",
+            "community_centre",
+            "townhall",
+            "courthouse",
+            "public_building",
+        ],
+    ) || has_tag_value(
+        tags,
+        "building",
+        &[
+            "library",
+            "theatre",
+            "arts_centre",
+            "community_centre",
+            "townhall",
+            "courthouse",
+            "public",
+        ],
+    ) || has_tag_value(tags, "tourism", &["gallery"])
+        || has_tag_value(tags, "office", &["government"])
+}
+
 fn is_major_sight(tags: &Tags) -> bool {
     if !has_name_tags(tags) {
         return false;
@@ -396,6 +442,18 @@ fn poi_kind(tags: &Tags) -> Option<&'static str> {
     }
     if is_bus_stop(tags) {
         return Some("bus_stop");
+    }
+    if is_ferry_terminal(tags) {
+        return Some("ferry_terminal");
+    }
+    if is_university(tags) {
+        return Some("university");
+    }
+    if is_museum(tags) {
+        return Some("museum");
+    }
+    if is_civic_building(tags) {
+        return Some("civic_building");
     }
     if is_major_sight(tags) {
         return Some("sight");
@@ -1334,6 +1392,22 @@ mod tests {
     <tag k="name" v="City Airport" />
     <tag k="aeroway" v="aerodrome" />
   </node>
+  <node id="6" lat="43.0" lon="-76.0">
+    <tag k="name" v="Harbor Ferry Terminal" />
+    <tag k="amenity" v="ferry_terminal" />
+  </node>
+  <node id="7" lat="44.0" lon="-77.0">
+    <tag k="name" v="State University" />
+    <tag k="amenity" v="university" />
+  </node>
+  <node id="8" lat="45.0" lon="-78.0">
+    <tag k="name" v="City Museum" />
+    <tag k="tourism" v="museum" />
+  </node>
+  <node id="9" lat="46.0" lon="-79.0">
+    <tag k="name" v="Central Library" />
+    <tag k="amenity" v="library" />
+  </node>
 </osm>
 "#;
 
@@ -1565,10 +1639,14 @@ mod tests {
         let mut names: Vec<String> = rows.iter().skip(1).map(|row| row[0].to_string()).collect();
         names.sort();
         let expected: Vec<String> = vec![
+            "Central Library",
             "Central Station",
             "City Airport",
+            "City Museum",
             "Eiffel Tower",
+            "Harbor Ferry Terminal",
             "Main Bus Stop",
+            "State University",
         ]
         .into_iter()
         .map(String::from)
@@ -1577,11 +1655,19 @@ mod tests {
 
         let mut kinds: Vec<String> = rows.iter().skip(1).map(|row| row[1].to_string()).collect();
         kinds.sort();
-        let expected_kinds: Vec<String> =
-            vec!["airport", "bus_stop", "sight", "train_station"]
-                .into_iter()
-                .map(String::from)
-                .collect();
+        let expected_kinds: Vec<String> = vec![
+            "airport",
+            "bus_stop",
+            "civic_building",
+            "ferry_terminal",
+            "museum",
+            "sight",
+            "train_station",
+            "university",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
         assert_eq!(kinds, expected_kinds);
     }
 }
