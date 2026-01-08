@@ -201,13 +201,15 @@ def build_trie(
                 continue
 
             node = (row.get("city_place_node") or "").strip()
-            if node not in node_index:
+            node_new = node not in node_index
+            if node_new:
                 node_index[node] = len(node_names)
                 node_names.append(node)
             node_idx = node_index[node]
 
             city = (row.get("city_place_city") or "").strip()
-            if city not in city_index:
+            city_new = city not in city_index
+            if city_new:
                 city_index[city] = len(city_names)
                 city_names.append(city)
             city_idx = city_index[city]
@@ -226,33 +228,6 @@ def build_trie(
                 location_index,
             )
 
-            city_name = (row.get("city_place_city") or "").strip()
-            add_location_entry(
-                trie,
-                city_name,
-                lon,
-                lat,
-                0,
-                city_idx,
-                CITY_KIND_BYTE,
-                locations,
-                location_index,
-            )
-
-            place_type = (row.get("city_place_type") or "").strip().lower()
-            if place_type == "suburb":
-                suburb_name = (row.get("city_place_node") or "").strip()
-                add_location_entry(
-                    trie,
-                    suburb_name,
-                    lon,
-                    lat,
-                    node_idx,
-                    city_idx,
-                    CITY_KIND_BYTE,
-                    locations,
-                    location_index,
-                )
     countries = load_countries(countries_path)
     add_countries_to_trie(
         trie,
