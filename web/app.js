@@ -1,6 +1,7 @@
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 const searchInput = document.getElementById("search");
+const filtersEl = document.getElementById("filters");
 
 const isLocalhost =
   window.location.hostname === "localhost" ||
@@ -19,6 +20,52 @@ const MAX_RESULTS = LOOKUP_CONFIG.maxResults;
 const SHARD_PREFIX_LEN = LOOKUP_CONFIG.shardPrefixLen;
 let map = null;
 let markersLayer = null;
+
+const KIND_LABELS = {
+  0: { label: "Street", emoji: "🛣️" },
+  1: { label: "Airport", emoji: "✈️" },
+  2: { label: "Train station", emoji: "🚆" },
+  3: { label: "Bus stop", emoji: "🚌" },
+  4: { label: "Ferry terminal", emoji: "⛴️" },
+  5: { label: "University", emoji: "🎓" },
+  6: { label: "Museum", emoji: "🏛️" },
+  7: { label: "Civic building", emoji: "🏛️" },
+  8: { label: "Sight", emoji: "📍" },
+  15: { label: "Other", emoji: "•" },
+};
+const KIND_ORDER = [0, 1, 2, 3, 4, 5, 6, 7, 8, 15];
+
+function renderFilters() {
+  if (!filtersEl) return;
+  filtersEl.innerHTML = "";
+  for (const kind of KIND_ORDER) {
+    const info = KIND_LABELS[kind];
+    const label = document.createElement("label");
+    label.className = "filter-item";
+    label.title = info.label;
+    label.setAttribute("aria-label", info.label);
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = String(kind);
+    checkbox.checked = true;
+    checkbox.addEventListener("change", updateAllowedKinds);
+    const emoji = document.createElement("span");
+    emoji.className = "filter-emoji";
+    emoji.textContent = info.emoji;
+    emoji.title = info.label;
+    label.append(checkbox, emoji);
+    filtersEl.appendChild(label);
+  }
+}
+
+function updateAllowedKinds() {
+  if (!filtersEl) return;
+  const checked = Array.from(
+    filtersEl.querySelectorAll("input[type=checkbox]:checked")
+  ).map((el) => Number(el.value));
+  streetLookup.setAllowedKinds(checked);
+  updateSearch();
+}
 
 function initMap() {
   map = L.map("map", { zoomControl: true });
@@ -62,19 +109,6 @@ function renderResults(entries) {
     return [];
   }
 
-  const KIND_LABELS = {
-    0: { label: "Street", emoji: "🛣️" },
-    1: { label: "Airport", emoji: "✈️" },
-    2: { label: "Train station", emoji: "🚆" },
-    3: { label: "Bus stop", emoji: "🚌" },
-    4: { label: "Ferry terminal", emoji: "⛴️" },
-    5: { label: "University", emoji: "🎓" },
-    6: { label: "Museum", emoji: "🏛️" },
-    7: { label: "Civic building", emoji: "🏛️" },
-    8: { label: "Sight", emoji: "📍" },
-    15: { label: "Other", emoji: "•" },
-  };
-
   for (const entry of limitedEntries) {
     const div = document.createElement("div");
     div.className = "result-item";
@@ -83,16 +117,24 @@ function renderResults(entries) {
     const mainEl = document.createElement("div");
     mainEl.className = "result-main";
 
+    const rowEl = document.createElement("div");
+    rowEl.className = "result-row";
+
     const nameEl = document.createElement("span");
     nameEl.className = "result-name";
     const kind = KIND_LABELS[entry.kindByte] || KIND_LABELS[15];
-    nameEl.textContent = `${kind.emoji} ${entry.display}`;
+    nameEl.textContent = entry.display;
 
     const cityEl = document.createElement("span");
     cityEl.className = "result-city";
     cityEl.textContent = `${cityText} · ${kind.label}`;
 
-    mainEl.append(nameEl, cityEl);
+    const emojiEl = document.createElement("span");
+    emojiEl.className = "result-emoji";
+    emojiEl.textContent = kind.emoji;
+
+    rowEl.append(nameEl, emojiEl);
+    mainEl.append(rowEl, cityEl);
     div.append(mainEl);
     div.addEventListener("click", () => addMarkers([entry]));
     resultsEl.appendChild(div);
@@ -133,6 +175,9 @@ async function updateSearch() {
   const entries = renderResults(lookupResult.results);
   addMarkers(entries.slice(0, 500));
 }
+
+renderFilters();
+updateAllowedKinds();
 
 initMap();
 map.setView([0, 0], 2);

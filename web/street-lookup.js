@@ -334,6 +334,25 @@ class StreetLookup {
     this.lookupId = 0;
     this.shardCache = new Map();
     this.shardLoads = new Map();
+    this.allowedKinds = this.normalizeKinds(opts.allowedKinds);
+  }
+
+  normalizeKinds(value) {
+    if (value == null) {
+      return null;
+    }
+    const set = new Set();
+    for (const item of value) {
+      const num = Number(item);
+      if (!Number.isNaN(num)) {
+        set.add(num);
+      }
+    }
+    return set;
+  }
+
+  setAllowedKinds(value) {
+    this.allowedKinds = this.normalizeKinds(value);
   }
 
   normalize(value) {
@@ -388,12 +407,30 @@ class StreetLookup {
     let bestBuilt = "";
     let bestConsumed = 0;
 
+    const isAllowedKind = (kind) => {
+      if (!this.allowedKinds) return true;
+      return this.allowedKinds.has(kind);
+    };
+
+    const getKindForValue = (value) => {
+      if (Array.isArray(value)) {
+        return value[4] ?? 0;
+      }
+      const loc = this.locations[value];
+      if (!loc) return 0;
+      return loc[4] ?? 0;
+    };
+
     const collectFrom = (nodeIndex, built) => {
       const node = this.trie.nodes[nodeIndex];
       if (!node) return;
 
       if (node.values.length) {
         for (const value of node.values) {
+          const kind = getKindForValue(value);
+          if (!isAllowedKind(kind)) {
+            continue;
+          }
           if (Array.isArray(value)) {
             results.push({ display: built, location: value });
           } else {

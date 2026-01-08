@@ -85,6 +85,30 @@ header p {
   gap: 12px;
 }
 
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 0 4px;
+}
+
+.filter-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.86rem;
+  color: #3f4a59;
+}
+
+.filter-item input {
+  accent-color: #2f5d62;
+}
+
+.filter-emoji {
+  font-size: 1rem;
+  line-height: 1;
+}
+
 label {
   font-weight: 600;
   letter-spacing: 0.4px;
@@ -125,6 +149,17 @@ input {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.result-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.result-emoji {
+  font-size: 0.85rem;
+  opacity: 0.85;
 }
 
 .result-name {
