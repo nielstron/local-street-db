@@ -121,7 +121,7 @@ def test_pack_trie_binary_format() -> None:
     )
 
     assert data[:4] == b"STRI"
-    assert data[4] == 5
+    assert data[4] == 6
     scale = data[5] | (data[6] << 8) | (data[7] << 16)
     assert scale == 10_000
     offset = 8
@@ -139,18 +139,6 @@ def test_pack_trie_binary_format() -> None:
     city = data[offset : offset + city_len].decode("utf-8")
     offset += city_len
     assert city == "Testville"
-
-    loc_count, offset = decode_varint(data, offset)
-    assert loc_count == 1
-    lon = int.from_bytes(data[offset : offset + 3], "little", signed=True)
-    lat = int.from_bytes(data[offset + 3 : offset + 6], "little", signed=True)
-    offset += 6
-    node_idx, offset = decode_varint(data, offset)
-    city_idx, offset = decode_varint(data, offset)
-    assert lon == 10_000
-    assert lat == 20_000
-    assert node_idx == 0
-    assert city_idx == 0
 
     trie_node_count, offset = decode_varint(data, offset)
     assert trie_node_count == 2
@@ -171,8 +159,15 @@ def test_pack_trie_binary_format() -> None:
     assert edge_count == 0
     values_count, offset = decode_varint(data, offset)
     assert values_count == 1
-    value, offset = decode_varint(data, offset)
-    assert value == 0
+    lon = int.from_bytes(data[offset : offset + 3], "little", signed=True)
+    lat = int.from_bytes(data[offset + 3 : offset + 6], "little", signed=True)
+    offset += 6
+    node_idx, offset = decode_varint(data, offset)
+    city_idx, offset = decode_varint(data, offset)
+    assert lon == 10_000
+    assert lat == 20_000
+    assert node_idx == 0
+    assert city_idx == 0
 
 
 def test_build_trie_from_csv(tmp_path: Path) -> None:

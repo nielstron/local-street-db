@@ -254,7 +254,7 @@ def pack_trie(
 ) -> bytes:
     out = bytearray()
     out.extend(b"STRI")
-    out.append(5)
+    out.append(6)
     if scale < 0 or scale > 0xFFFFFF:
         raise ValueError("scale must fit in 3 bytes")
     out.extend(scale.to_bytes(3, "little", signed=False))
@@ -271,15 +271,6 @@ def pack_trie(
         out.extend(encode_varint(len(city_bytes)))
         out.extend(city_bytes)
 
-    out.extend(encode_varint(len(locations)))
-    for lon, lat, node_idx, city_idx in locations:
-        lon_i = int(round(lon * scale))
-        lat_i = int(round(lat * scale))
-        out.extend(lon_i.to_bytes(3, "little", signed=True))
-        out.extend(lat_i.to_bytes(3, "little", signed=True))
-        out.extend(encode_varint(node_idx))
-        out.extend(encode_varint(city_idx))
-
     nodes = build_nodes(trie)
     out.extend(encode_varint(len(nodes)))
     for node in nodes:
@@ -294,7 +285,13 @@ def pack_trie(
         values = node["values"]
         out.extend(encode_varint(len(values)))
         for value in values:
-            out.extend(encode_varint(value))
+            lon, lat, node_idx, city_idx = locations[value]
+            lon_i = int(round(lon * scale))
+            lat_i = int(round(lat * scale))
+            out.extend(lon_i.to_bytes(3, "little", signed=True))
+            out.extend(lat_i.to_bytes(3, "little", signed=True))
+            out.extend(encode_varint(node_idx))
+            out.extend(encode_varint(city_idx))
 
     return bytes(out)
 

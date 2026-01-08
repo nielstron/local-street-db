@@ -33,12 +33,12 @@ function decodePackedTrie(buffer) {
     throw new Error("Invalid trie file");
   }
   const version = view.getUint8(4);
-  if (version !== 3 && version !== 4 && version !== 5) {
+  if (version !== 3 && version !== 4 && version !== 5 && version !== 6) {
     throw new Error(`Unsupported version ${version}`);
   }
   let scale;
   let offset;
-  if (version === 5) {
+  if (version === 5 || version === 6) {
     scale =
       view.getUint8(5) |
       (view.getUint8(6) << 8) |
@@ -73,25 +73,30 @@ function decodePackedTrie(buffer) {
     cityList[i] = city;
   }
 
-  let count;
-  [count, offset] = decodeVarint(view, offset);
-  const locs = new Array(count);
-  for (let i = 0; i < count; i++) {
-    let lon;
-    let lat;
-    if (version === 5) {
-      [lon, offset] = decodeInt24(view, offset);
-      [lat, offset] = decodeInt24(view, offset);
-    } else {
-      lon = view.getInt32(offset, true);
-      lat = view.getInt32(offset + 4, true);
-      offset += 8;
+  let locs = [];
+  let locationsCount = 0;
+  if (version <= 5) {
+    let count;
+    [count, offset] = decodeVarint(view, offset);
+    locs = new Array(count);
+    locationsCount = count;
+    for (let i = 0; i < count; i++) {
+      let lon;
+      let lat;
+      if (version === 5) {
+        [lon, offset] = decodeInt24(view, offset);
+        [lat, offset] = decodeInt24(view, offset);
+      } else {
+        lon = view.getInt32(offset, true);
+        lat = view.getInt32(offset + 4, true);
+        offset += 8;
+      }
+      let nodeIdx;
+      [nodeIdx, offset] = decodeVarint(view, offset);
+      let cityIdx;
+      [cityIdx, offset] = decodeVarint(view, offset);
+      locs[i] = [lon / scale, lat / scale, nodeIdx, cityIdx];
     }
-    let nodeIdx;
-    [nodeIdx, offset] = decodeVarint(view, offset);
-    let cityIdx;
-    [cityIdx, offset] = decodeVarint(view, offset);
-    locs[i] = [lon / scale, lat / scale, nodeIdx, cityIdx];
   }
 
   let labelTable = null;
@@ -138,14 +143,33 @@ function decodePackedTrie(buffer) {
     [valuesCount, offset] = decodeVarint(view, offset);
     const values = [];
     for (let v = 0; v < valuesCount; v++) {
-      let value;
-      [value, offset] = decodeVarint(view, offset);
-      values.push(value);
+      if (version === 6) {
+        let lon;
+        let lat;
+        [lon, offset] = decodeInt24(view, offset);
+        [lat, offset] = decodeInt24(view, offset);
+        let nodeIdx;
+        [nodeIdx, offset] = decodeVarint(view, offset);
+        let cityIdx;
+        [cityIdx, offset] = decodeVarint(view, offset);
+        values.push([lon / scale, lat / scale, nodeIdx, cityIdx]);
+        locationsCount += 1;
+      } else {
+        let value;
+        [value, offset] = decodeVarint(view, offset);
+        values.push(value);
+      }
     }
     nodes[i] = { edges, values };
   }
 
-  return { locations: locs, placeNodes: nodeList, placeCities: cityList, nodes };
+  return {
+    locations: locs,
+    locationsCount,
+    placeNodes: nodeList,
+    placeCities: cityList,
+    nodes,
+  };
 }
 
 function ensureArrayBuffer(view) {
@@ -179,6 +203,7 @@ class StreetLookup {
 
     this.trie = null;
     this.locations = [];
+    this.locationsCount = 0;
     this.placeNodes = [];
     this.placeCities = [];
     this.currentShardKey = null;
@@ -244,8 +269,12 @@ class StreetLookup {
       if (!node) return;
 
       if (node.values.length) {
-        for (const idx of node.values) {
-          results.push({ display: built, index: idx });
+        for (const value of node.values) {
+          if (Array.isArray(value)) {
+            results.push({ display: built, location: value });
+          } else {
+            results.push({ display: built, index: value });
+          }
           if (results.length >= this.maxResults) return;
         }
       }
@@ -332,6 +361,7 @@ class StreetLookup {
         }
         this.trie = decoded;
         this.locations = decoded.locations;
+        this.locationsCount = decoded.locationsCount ?? decoded.locations.length;
         this.placeNodes = decoded.placeNodes;
         this.placeCities = decoded.placeCities;
         this.currentShardKey = shardKey;
@@ -342,6 +372,7 @@ class StreetLookup {
         }
         this.trie = null;
         this.locations = [];
+        this.locationsCount = 0;
         this.placeNodes = [];
         this.placeCities = [];
         this.currentShardKey = shardKey;
@@ -356,21 +387,21 @@ class StreetLookup {
     const matches = this.collectMatches(query);
     const results = matches.map((entry) => ({
       ...entry,
-      location: this.locations[entry.index] || null,
-      placeLabel: this.buildPlaceLabel(entry.index),
+      location: entry.location ?? this.locations[entry.index] ?? null,
+      placeLabel: this.buildPlaceLabel(entry.location, entry.index),
     }));
 
     return {
       status: "ready",
       shardKey,
       loaded,
-      locationsCount: this.locations.length,
+      locationsCount: this.locationsCount,
       results,
     };
   }
 
-  buildPlaceLabel(index) {
-    const loc = this.locations[index];
+  buildPlaceLabel(location, index) {
+    const loc = location ?? this.locations[index];
     if (!loc) return "Unknown city";
     const nodeName = this.placeNodes[loc[2]] || "";
     const cityName = this.placeCities[loc[3]] || "";
