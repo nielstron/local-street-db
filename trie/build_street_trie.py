@@ -13,9 +13,13 @@ KIND_TO_BYTE = {
     "airport": 1,
     "train_station": 2,
     "bus_stop": 3,
-    "sight": 4,
+    "ferry_terminal": 4,
+    "university": 5,
+    "museum": 6,
+    "civic_building": 7,
+    "sight": 8,
 }
-DEFAULT_KIND_BYTE = 5
+DEFAULT_KIND_BYTE = 15
 
 
 def find_default_csv(folder: Path) -> Path:
