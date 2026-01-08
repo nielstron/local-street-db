@@ -190,6 +190,7 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
         writer.writerow(
             [
                 "streetname",
+                "name_lang",
                 "kind",
                 "center_lon",
                 "center_lat",
@@ -198,11 +199,11 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
                 "city_place_city",
             ]
         )
-        writer.writerow(["Main St", "street", "1.0", "2.0", "Node A", "city", "City A"])
-        writer.writerow(["Main St", "street", "1.0", "2.0", "Node A", "city", "City A"])
-        writer.writerow(["Main St", "street", "3.0", "4.0", "Node B", "city", "City B"])
-        writer.writerow(["Second St", "bus_stop", "5.0", "6.0", "", "city", "City C"])
-        writer.writerow(["Third St", "street", "7.0", "8.0", "Suburb A", "suburb", "City A"])
+        writer.writerow(["Main St", "", "street", "1.0", "2.0", "Node A", "city", "City A"])
+        writer.writerow(["Main St", "", "street", "1.0", "2.0", "Node A", "city", "City A"])
+        writer.writerow(["Main St", "", "street", "3.0", "4.0", "Node B", "city", "City B"])
+        writer.writerow(["Second St", "", "bus_stop", "5.0", "6.0", "", "city", "City C"])
+        writer.writerow(["Third St", "", "street", "7.0", "8.0", "Suburb A", "suburb", "City A"])
 
     locations, nodes, cities, trie = build_trie(csv_path, countries_path)
     assert locations == [

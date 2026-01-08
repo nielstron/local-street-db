@@ -25,6 +25,32 @@ DEFAULT_KIND_BYTE = 15
 CITY_KIND_BYTE = KIND_TO_BYTE["city"]
 COUNTRY_KIND_BYTE = KIND_TO_BYTE["country"]
 DEFAULT_COUNTRIES_PATH = Path(__file__).with_name("countries.csv")
+TOP_LANGUAGE_CODES = {
+    "zh",
+    "es",
+    "en",
+    "ar",
+    "hi",
+    "bn",
+    "pt",
+    "ru",
+    "ja",
+    "de",
+    "fr",
+}
+
+
+def normalize_lang(lang: str) -> str:
+    value = lang.strip().lower()
+    if len(value) < 2:
+        return value
+    return value[:2]
+
+
+def is_allowed_lang(lang: str) -> bool:
+    if not lang:
+        return True
+    return normalize_lang(lang) in TOP_LANGUAGE_CODES
 
 
 def find_default_csv(folder: Path) -> Path:
@@ -171,6 +197,7 @@ def build_trie(
 ) -> Tuple[List[Tuple[float, float, int, int, int]], List[str], List[str], Dict]:
     locations: List[Tuple[float, float, int, int, int]] = []
     location_index: Dict[Tuple[float, float, int, int, int], int] = {}
+    name_dedupe: Dict[Tuple[float, float, int, int, int], set[str]] = {}
     node_names: List[str] = [""]
     node_index: Dict[str, int] = {"": 0}
     city_names: List[str] = [""]
@@ -194,6 +221,9 @@ def build_trie(
             name = (row.get("streetname") or "").strip()
             if not name:
                 continue
+            name_lang = (row.get("name_lang") or "").strip()
+            if not is_allowed_lang(name_lang):
+                continue
             try:
                 lon = float(row["center_lon"])
                 lat = float(row["center_lat"])
@@ -216,6 +246,11 @@ def build_trie(
 
             kind_str = (row.get("kind") or "").strip().lower()
             kind_byte = KIND_TO_BYTE.get(kind_str, DEFAULT_KIND_BYTE)
+            dedupe_key = (lon, lat, node_idx, city_idx, kind_byte)
+            seen_names = name_dedupe.setdefault(dedupe_key, set())
+            if name in seen_names:
+                continue
+            seen_names.add(name)
             add_location_entry(
                 trie,
                 name,
@@ -291,6 +326,9 @@ def build_trie_shards(
             name = (row.get("streetname") or "").strip()
             if not name:
                 continue
+            name_lang = (row.get("name_lang") or "").strip()
+            if not is_allowed_lang(name_lang):
+                continue
             shard_key = shard_key_for_name(name, shard_len)
             if shard_key is None:
                 continue
@@ -305,6 +343,7 @@ def build_trie_shards(
                 shard = {
                     "locations": [],
                     "location_index": {},
+                    "name_dedupe": {},
                     "node_names": [""],
                     "node_index": {"": 0},
                     "city_names": [""],
@@ -327,6 +366,11 @@ def build_trie_shards(
 
             kind_str = (row.get("kind") or "").strip().lower()
             kind_byte = KIND_TO_BYTE.get(kind_str, DEFAULT_KIND_BYTE)
+            dedupe_key = (lon, lat, node_idx, city_idx, kind_byte)
+            seen_names = shard["name_dedupe"].setdefault(dedupe_key, set())
+            if name in seen_names:
+                continue
+            seen_names.add(name)
             add_location_entry(
                 shard["trie"],
                 name,
@@ -395,6 +439,7 @@ def build_trie_shards(
 
     for shard in shards.values():
         shard.pop("location_index", None)
+        shard.pop("name_dedupe", None)
         shard.pop("node_index", None)
         shard.pop("city_index", None)
     return shards
