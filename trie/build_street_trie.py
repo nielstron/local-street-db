@@ -228,6 +228,7 @@ def build_trie(
                 location_index,
             )
 
+
     countries = load_countries(countries_path)
     add_countries_to_trie(
         trie,
@@ -338,33 +339,6 @@ def build_trie_shards(
                 shard["location_index"],
             )
 
-            city_name = (row.get("city_place_city") or "").strip()
-            add_location_entry(
-                shard["trie"],
-                city_name,
-                lon,
-                lat,
-                0,
-                city_idx,
-                CITY_KIND_BYTE,
-                shard["locations"],
-                shard["location_index"],
-            )
-
-            place_type = (row.get("city_place_type") or "").strip().lower()
-            if place_type == "suburb":
-                suburb_name = (row.get("city_place_node") or "").strip()
-                add_location_entry(
-                    shard["trie"],
-                    suburb_name,
-                    lon,
-                    lat,
-                    node_idx,
-                    city_idx,
-                    CITY_KIND_BYTE,
-                    shard["locations"],
-                    shard["location_index"],
-                )
 
     countries = load_countries(countries_path)
     for code, name, lon, lat in countries:

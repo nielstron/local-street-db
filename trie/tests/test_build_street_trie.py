@@ -207,14 +207,9 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
     locations, nodes, cities, trie = build_trie(csv_path, countries_path)
     assert locations == [
         (1.0, 2.0, 1, 1, 0),
-        (1.0, 2.0, 0, 1, 9),
         (3.0, 4.0, 2, 2, 0),
-        (3.0, 4.0, 0, 2, 9),
         (5.0, 6.0, 0, 3, 3),
-        (5.0, 6.0, 0, 3, 9),
         (7.0, 8.0, 3, 1, 0),
-        (7.0, 8.0, 0, 1, 9),
-        (7.0, 8.0, 3, 1, 9),
         (10.0, 9.0, 4, 4, 10),
         (12.0, -5.0, 5, 5, 10),
     ]
@@ -224,11 +219,11 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
     assert lookup_trie(compressed, "Main St") == [0, 0, 2]
     assert lookup_trie(compressed, "Second St") == [4]
     assert lookup_trie(compressed, "Third St") == [6]
-    assert lookup_trie(compressed, "City A") == [1, 1, 7]
-    assert lookup_trie(compressed, "City B") == [3]
-    assert lookup_trie(compressed, "City C") == [5]
-    assert lookup_trie(compressed, "Suburb A") == [8]
-    assert lookup_trie(compressed, "Country A") == [9]
-    assert lookup_trie(compressed, "Country B") == [10]
-    assert lookup_trie(compressed, "AA") == [9]
-    assert lookup_trie(compressed, "BB") == [10]
+    assert lookup_trie(compressed, "City A") == []
+    assert lookup_trie(compressed, "City B") == []
+    assert lookup_trie(compressed, "City C") == []
+    assert lookup_trie(compressed, "Suburb A") == []
+    assert lookup_trie(compressed, "Country A") == [8]
+    assert lookup_trie(compressed, "Country B") == [9]
+    assert lookup_trie(compressed, "AA") == [8]
+    assert lookup_trie(compressed, "BB") == [9]

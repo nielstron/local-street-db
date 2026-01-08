@@ -170,10 +170,7 @@ fn has_name_tags(tags: &Tags) -> bool {
 
 fn is_place_node(tags: &Tags) -> bool {
     let place = tags.get("place").map(|value| value.as_str()).unwrap_or("");
-    let has_name = tags
-        .get("name")
-        .map(|value| !value.is_empty())
-        .unwrap_or(false);
+    let has_name = has_name_tags(tags);
     has_name
         && matches!(
             place,
@@ -185,9 +182,12 @@ fn place_node_from_tags(tags: &Tags, coord: (f64, f64)) -> Option<PlaceNode> {
     if !is_place_node(tags) {
         return None;
     }
-    let name = tags.get("name")?.to_string();
+    let names = collect_names(tags);
+    if names.is_empty() {
+        return None;
+    }
     let place_type = tags.get("place")?.to_string();
-    Some(PlaceNode::new(name, place_type, coord))
+    Some(PlaceNode::new(names, place_type, coord))
 }
 
 fn is_city_or_town(place_type: &str) -> bool {
@@ -500,6 +500,54 @@ fn resolve_city_fields(
     )
 }
 
+fn city_fields_for_place(place: &PlaceNode, place_index: &PlaceIndex) -> (String, String, String, String) {
+    let city_place_node = place.name.clone();
+    let city_place_type = place.place_type.clone();
+    let city_place_city = if place.is_city_town {
+        place.name.clone()
+    } else {
+        place_index
+            .nearest(place.coord, PlaceFilter::CityTown)
+            .map(|city| city.name.clone())
+            .unwrap_or_default()
+    };
+    let city_resolved = if !city_place_city.is_empty() {
+        city_place_city.clone()
+    } else {
+        city_place_node.clone()
+    };
+    (
+        city_place_node,
+        city_place_type,
+        city_place_city,
+        city_resolved,
+    )
+}
+
+fn add_place_entries(
+    place_nodes: &[PlaceNode],
+    place_index: &PlaceIndex,
+    entries: &mut Vec<StreetEntry>,
+) {
+    for place in place_nodes {
+        let (city_place_node, city_place_type, city_place_city, city_resolved) =
+            city_fields_for_place(place, place_index);
+        for name in &place.names {
+            entries.push(StreetEntry {
+                name: name.clone(),
+                kind: "city".to_string(),
+                center_lon: place.coord.0,
+                center_lat: place.coord.1,
+                length_km: 0.0,
+                city_place_node: city_place_node.clone(),
+                city_place_type: city_place_type.clone(),
+                city_place_city: city_place_city.clone(),
+                city_resolved: city_resolved.clone(),
+            });
+        }
+    }
+}
+
 
 fn collect_pbf_place_nodes(objs: &BTreeMap<OsmId, OsmObj>) -> Vec<PlaceNode> {
     let mut places = Vec::new();
@@ -523,6 +571,7 @@ struct WayData {
 #[derive(Clone)]
 struct PlaceNode {
     name: String,
+    names: Vec<String>,
     place_type: String,
     coord: (f64, f64),
     lat_rad: f64,
@@ -532,13 +581,18 @@ struct PlaceNode {
 }
 
 impl PlaceNode {
-    fn new(name: String, place_type: String, coord: (f64, f64)) -> Self {
+    fn new(mut names: Vec<String>, place_type: String, coord: (f64, f64)) -> Self {
+        if names.is_empty() {
+            names.push("".to_string());
+        }
+        let name = names[0].clone();
         let lat_rad = coord.1.to_radians();
         let lon_rad = coord.0.to_radians();
         let cos_lat = lat_rad.cos();
         let is_city_town = is_city_or_town(&place_type);
         Self {
             name,
+            names,
             place_type,
             coord,
             lat_rad,
@@ -856,6 +910,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
 
     let place_index = PlaceIndex::new(place_nodes, 1.0);
     let mut entries: Vec<StreetEntry> = Vec::new();
+    add_place_entries(&place_index.places, &place_index, &mut entries);
     for node in poi_nodes {
         let coord = match node.coord {
             Some(coord) => coord,
@@ -1005,6 +1060,7 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
     let place_index = PlaceIndex::new(place_nodes, 1.0);
 
     let mut entries: Vec<StreetEntry> = Vec::new();
+    add_place_entries(&place_index.places, &place_index, &mut entries);
     for obj in objs.values() {
         match obj {
             OsmObj::Way(way) => {
@@ -1226,6 +1282,7 @@ mod tests {
   <node id="7" lat="0.5" lon="0.5">
     <tag k="place" v="town" />
     <tag k="name" v="Placetown" />
+    <tag k="name:fr" v="Ville Place" />
   </node>
   <node id="100" lat="-1.0" lon="-1.0" />
   <node id="101" lat="-1.0" lon="3.0" />
@@ -1441,8 +1498,8 @@ mod tests {
     #[test]
     fn place_index_picks_nearest_and_filters() {
         let places = vec![
-            PlaceNode::new("Near".to_string(), "town".to_string(), (0.0, 0.0)),
-            PlaceNode::new("Far".to_string(), "hamlet".to_string(), (5.0, 5.0)),
+            PlaceNode::new(vec!["Near".to_string()], "town".to_string(), (0.0, 0.0)),
+            PlaceNode::new(vec!["Far".to_string()], "hamlet".to_string(), (5.0, 5.0)),
         ];
         let index = PlaceIndex::new(places, 1.0);
 
@@ -1488,8 +1545,19 @@ mod tests {
                 "city_resolved",
             ]
         );
-        let names: Vec<&str> = rows[1..].iter().map(|row| row[0].as_str()).collect();
-        assert_eq!(names, vec!["Main Street", "Old Main", "Open Way"]);
+        let mut names: Vec<String> =
+            rows[1..].iter().map(|row| row[0].to_string()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "Main Street",
+                "Old Main",
+                "Open Way",
+                "Placetown",
+                "Ville Place",
+            ]
+        );
 
         let open_row = rows
             .iter()
@@ -1586,7 +1654,11 @@ mod tests {
             .map(|row| row.unwrap().iter().map(|value| value.to_string()).collect())
             .collect();
 
-        let data_rows: Vec<&Vec<String>> = rows.iter().skip(1).collect();
+        let data_rows: Vec<&Vec<String>> = rows
+            .iter()
+            .skip(1)
+            .filter(|row| row[1] != "city")
+            .collect();
         assert_eq!(data_rows.len(), 1);
         assert_eq!(data_rows[0][0], "Dave Burns Drive");
 
@@ -1612,7 +1684,11 @@ mod tests {
             .map(|row| row.unwrap().iter().map(|value| value.to_string()).collect())
             .collect();
 
-        let data_rows: Vec<&Vec<String>> = rows.iter().skip(1).collect();
+        let data_rows: Vec<&Vec<String>> = rows
+            .iter()
+            .skip(1)
+            .filter(|row| row[1] != "city")
+            .collect();
         assert_eq!(data_rows.len(), 2);
         let mut cities: Vec<&str> = data_rows.iter().map(|row| row[7].as_str()).collect();
         cities.sort();
