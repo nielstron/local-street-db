@@ -203,7 +203,10 @@ fn place_node_from_tags(tags: &Tags, coord: (f64, f64)) -> Option<PlaceNode> {
         return None;
     }
     let place_type = tags.get("place")?.to_string();
-    Some(PlaceNode::new(names, place_type, coord))
+    let population = tags
+        .get("population")
+        .and_then(|value| parse_population(value));
+    Some(PlaceNode::new(names, place_type, coord, population))
 }
 
 fn is_city_or_town(place_type: &str) -> bool {
@@ -485,21 +488,20 @@ fn resolve_city_fields(
     tags: &Tags,
     center: (f64, f64),
     place_index: &PlaceIndex,
-) -> (String, String, String, String) {
+) -> (String, String, String, String, String) {
     let city_addr = tags.get("addr:city");
     let city_place = tags.get("addr:place");
     let city = city_addr.or(city_place);
     let city_boundary: Option<String> = None;
     let place_match = place_index.nearest(center, PlaceFilter::Any);
-    let city_place_node = place_match.as_ref().map(|place| place.name.clone());
-    let city_place_type = place_match.as_ref().map(|place| place.place_type.clone());
-    let city_place_city = match place_match.as_ref() {
-        Some(place) if is_city_or_town(&place.place_type) => Some(place.name.clone()),
-        Some(_) => place_index
-            .nearest(center, PlaceFilter::CityTown)
-            .map(|place| place.name.clone()),
+    let city_place_node = place_match.map(|place| place.name.clone());
+    let city_place_type = place_match.map(|place| place.place_type.clone());
+    let city_place_city_node = match place_match {
+        Some(place) if is_city_or_town(&place.place_type) => Some(place),
+        Some(_) => place_index.nearest(center, PlaceFilter::CityTown),
         None => None,
     };
+    let city_place_city = city_place_city_node.map(|place| place.name.clone());
     let city_is_in = is_in_city(tags);
     let city_resolved = resolve_first_non_empty(&[
         city.map(|value| value.as_str()),
@@ -508,35 +510,50 @@ fn resolve_city_fields(
         city_place_city.as_deref(),
         city_place_node.as_deref(),
     ]);
+    let city_population = city_place_city_node
+        .and_then(|place| place.population)
+        .or_else(|| place_match.and_then(|place| place.population))
+        .map(|value: u64| value.to_string())
+        .unwrap_or_default();
     (
         city_place_node.unwrap_or_default(),
         city_place_type.unwrap_or_default(),
         city_place_city.unwrap_or_default(),
         city_resolved.unwrap_or_default(),
+        city_population,
     )
 }
 
-fn city_fields_for_place(place: &PlaceNode, place_index: &PlaceIndex) -> (String, String, String, String) {
+fn city_fields_for_place(
+    place: &PlaceNode,
+    place_index: &PlaceIndex,
+) -> (String, String, String, String, String) {
     let city_place_node = place.name.clone();
     let city_place_type = place.place_type.clone();
-    let city_place_city = if place.is_city_town {
-        place.name.clone()
+    let city_place_city_node = if place.is_city_town {
+        Some(place)
     } else {
-        place_index
-            .nearest(place.coord, PlaceFilter::CityTown)
-            .map(|city| city.name.clone())
-            .unwrap_or_default()
+        place_index.nearest(place.coord, PlaceFilter::CityTown)
     };
+    let city_place_city = city_place_city_node
+        .map(|city| city.name.clone())
+        .unwrap_or_default();
     let city_resolved = if !city_place_city.is_empty() {
         city_place_city.clone()
     } else {
         city_place_node.clone()
     };
+    let city_population = city_place_city_node
+        .and_then(|city| city.population)
+        .or(place.population)
+        .map(|value| value.to_string())
+        .unwrap_or_default();
     (
         city_place_node,
         city_place_type,
         city_place_city,
         city_resolved,
+        city_population,
     )
 }
 
@@ -546,7 +563,7 @@ fn add_place_entries(
     entries: &mut Vec<StreetEntry>,
 ) {
     for place in place_nodes {
-        let (city_place_node, city_place_type, city_place_city, city_resolved) =
+        let (city_place_node, city_place_type, city_place_city, city_resolved, city_population) =
             city_fields_for_place(place, place_index);
         for name in &place.names {
             entries.push(StreetEntry {
@@ -560,6 +577,7 @@ fn add_place_entries(
                 city_place_type: city_place_type.clone(),
                 city_place_city: city_place_city.clone(),
                 city_resolved: city_resolved.clone(),
+                city_population: city_population.clone(),
             });
         }
     }
@@ -595,10 +613,16 @@ struct PlaceNode {
     lon_rad: f64,
     cos_lat: f64,
     is_city_town: bool,
+    population: Option<u64>,
 }
 
 impl PlaceNode {
-    fn new(mut names: Vec<NameVariant>, place_type: String, coord: (f64, f64)) -> Self {
+    fn new(
+        mut names: Vec<NameVariant>,
+        place_type: String,
+        coord: (f64, f64),
+        population: Option<u64>,
+    ) -> Self {
         if names.is_empty() {
             names.push(NameVariant {
                 name: "".to_string(),
@@ -619,6 +643,7 @@ impl PlaceNode {
             lon_rad,
             cos_lat,
             is_city_town,
+            population,
         }
     }
 }
@@ -642,6 +667,7 @@ struct StreetEntry {
     city_place_type: String,
     city_place_city: String,
     city_resolved: String,
+    city_population: String,
 }
 
 const MERGE_DISTANCE_KM: f64 = 1.0;
@@ -708,6 +734,7 @@ fn merge_cluster(entries: &[StreetEntry], indices: &[usize]) -> StreetEntry {
     let city_place_type = pick_mode(entries, indices, |e| e.city_place_type.as_str());
     let city_place_city = pick_mode(entries, indices, |e| e.city_place_city.as_str());
     let city_resolved = pick_mode(entries, indices, |e| e.city_resolved.as_str());
+    let city_population = pick_mode(entries, indices, |e| e.city_population.as_str());
 
     StreetEntry {
         name,
@@ -720,6 +747,7 @@ fn merge_cluster(entries: &[StreetEntry], indices: &[usize]) -> StreetEntry {
         city_place_type,
         city_place_city,
         city_resolved,
+        city_population,
     }
 }
 
@@ -950,7 +978,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
         if names.is_empty() {
             continue;
         }
-        let (city_place_node, city_place_type, city_place_city, city_resolved) =
+        let (city_place_node, city_place_type, city_place_city, city_resolved, city_population) =
             resolve_city_fields(&node.tags, coord, &place_index);
         for name in names {
             entries.push(StreetEntry {
@@ -964,6 +992,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
                 city_place_type: city_place_type.clone(),
                 city_place_city: city_place_city.clone(),
                 city_resolved: city_resolved.clone(),
+                city_population: city_population.clone(),
             });
         }
     }
@@ -1020,7 +1049,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
             }
         };
 
-        let (city_place_node, city_place_type, city_place_city, city_resolved) =
+        let (city_place_node, city_place_type, city_place_city, city_resolved, city_population) =
             resolve_city_fields(&way.tags, (center_lon, center_lat), &place_index);
         let length_km = if is_street { path_length_km(&coords) } else { 0.0 };
         for name in names {
@@ -1035,6 +1064,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
                 city_place_type: city_place_type.clone(),
                 city_place_city: city_place_city.clone(),
                 city_resolved: city_resolved.clone(),
+                city_population: city_population.clone(),
             });
         }
     }
@@ -1050,6 +1080,7 @@ fn extract_osm_xml_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Re
             entry.city_place_type,
             entry.city_place_city,
             entry.city_resolved,
+            entry.city_population,
         ])?;
     }
 
@@ -1148,7 +1179,7 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
                     }
                 };
 
-                let (city_place_node, city_place_type, city_place_city, city_resolved) =
+                let (city_place_node, city_place_type, city_place_city, city_resolved, city_population) =
                     resolve_city_fields(&way.tags, (center_lon, center_lat), &place_index);
                 let length_km = if is_street { path_length_km(&coords) } else { 0.0 };
                 for name in names {
@@ -1163,6 +1194,7 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
                         city_place_type: city_place_type.clone(),
                         city_place_city: city_place_city.clone(),
                         city_resolved: city_resolved.clone(),
+                        city_population: city_population.clone(),
                     });
                 }
             }
@@ -1176,7 +1208,7 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
                     continue;
                 }
                 let center = (node.lon(), node.lat());
-                let (city_place_node, city_place_type, city_place_city, city_resolved) =
+                let (city_place_node, city_place_type, city_place_city, city_resolved, city_population) =
                     resolve_city_fields(&node.tags, center, &place_index);
                 for name in names {
                     entries.push(StreetEntry {
@@ -1190,6 +1222,7 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
                         city_place_type: city_place_type.clone(),
                         city_place_city: city_place_city.clone(),
                         city_resolved: city_resolved.clone(),
+                        city_population: city_population.clone(),
                     });
                 }
             }
@@ -1208,11 +1241,25 @@ fn extract_pbf_to_writer(input_path: &Path, writer: &mut Writer<File>) -> Result
             entry.city_place_type,
             entry.city_place_city,
             entry.city_resolved,
+            entry.city_population,
         ])?;
     }
 
     Ok(())
 }
+
+const CSV_HEADERS: [&str; 10] = [
+    "streetname",
+    "name_lang",
+    "kind",
+    "center_lon",
+    "center_lat",
+    "city_place_node",
+    "city_place_type",
+    "city_place_city",
+    "city_resolved",
+    "city_population",
+];
 
 fn extract_to_csv(input_path: &Path, output_path: &Path) -> Result<()> {
     if let Some(parent) = output_path.parent() {
@@ -1222,17 +1269,7 @@ fn extract_to_csv(input_path: &Path, output_path: &Path) -> Result<()> {
     }
 
     let mut writer = Writer::from_path(output_path)?;
-    writer.write_record([
-        "streetname",
-        "name_lang",
-        "kind",
-        "center_lon",
-        "center_lat",
-        "city_place_node",
-        "city_place_type",
-        "city_place_city",
-        "city_resolved",
-    ])?;
+    writer.write_record(CSV_HEADERS)?;
 
     let ext = input_path.extension().and_then(|value| value.to_str());
     match ext {
@@ -1298,6 +1335,14 @@ fn run() -> Result<()> {
     extract_to_csv(&input_path, &output_path)
 }
 
+fn parse_population(value: &str) -> Option<u64> {
+    let digits: String = value.chars().filter(|ch| ch.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse::<u64>().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1316,6 +1361,7 @@ mod tests {
     <tag k="place" v="town" />
     <tag k="name" v="Placetown" />
     <tag k="name:fr" v="Ville Place" />
+    <tag k="population" v="12345" />
   </node>
   <node id="100" lat="-1.0" lon="-1.0" />
   <node id="101" lat="-1.0" lon="3.0" />
@@ -1414,6 +1460,7 @@ mod tests {
   <node id="10" lat="0.001" lon="0.001">
     <tag k="place" v="city" />
     <tag k="name" v="Testville" />
+    <tag k="population" v="100000" />
   </node>
   <way id="40">
     <nd ref="1" />
@@ -1439,10 +1486,12 @@ mod tests {
   <node id="10" lat="0.001" lon="0.001">
     <tag k="place" v="city" />
     <tag k="name" v="Alpha City" />
+    <tag k="population" v="50000" />
   </node>
   <node id="11" lat="0.0085" lon="0.001">
     <tag k="place" v="city" />
     <tag k="name" v="Beta City" />
+    <tag k="population" v="75000" />
   </node>
   <way id="40">
     <nd ref="1" />
@@ -1551,6 +1600,7 @@ mod tests {
                 }],
                 "town".to_string(),
                 (0.0, 0.0),
+                None,
             ),
             PlaceNode::new(
                 vec![NameVariant {
@@ -1559,6 +1609,7 @@ mod tests {
                 }],
                 "hamlet".to_string(),
                 (5.0, 5.0),
+                None,
             ),
         ];
         let index = PlaceIndex::new(places, 1.0);
@@ -1592,20 +1643,9 @@ mod tests {
             .map(|row| row.unwrap().iter().map(|value| value.to_string()).collect())
             .collect();
 
-        assert_eq!(
-            rows[0],
-            vec![
-                "streetname",
-                "name_lang",
-                "kind",
-                "center_lon",
-                "center_lat",
-                "city_place_node",
-                "city_place_type",
-                "city_place_city",
-                "city_resolved",
-            ]
-        );
+        let expected_headers: Vec<String> =
+            CSV_HEADERS.iter().map(|header| (*header).to_string()).collect();
+        assert_eq!(rows[0], expected_headers);
         let mut names: Vec<String> =
             rows[1..].iter().map(|row| row[0].to_string()).collect();
         names.sort();
@@ -1625,33 +1665,41 @@ mod tests {
             .skip(1)
             .find(|row| row[0] == "Open Way")
             .unwrap();
-        assert_eq!(open_row[1], "");
-        assert_eq!(open_row[2], "street");
-        assert_eq!(open_row[3], "0");
-        assert_eq!(open_row[4], "2");
-        assert_eq!(open_row[5], "");
-        assert_eq!(open_row[6], "");
-        assert_eq!(open_row[7], "");
-        assert_eq!(open_row[8], "");
+        let idx = |name: &str| {
+            CSV_HEADERS
+                .iter()
+                .position(|header| header == &name)
+                .unwrap()
+        };
+        assert_eq!(open_row[idx("name_lang")], "");
+        assert_eq!(open_row[idx("kind")], "street");
+        assert_eq!(open_row[idx("center_lon")], "0");
+        assert_eq!(open_row[idx("center_lat")], "2");
+        assert_eq!(open_row[idx("city_place_node")], "");
+        assert_eq!(open_row[idx("city_place_type")], "");
+        assert_eq!(open_row[idx("city_place_city")], "");
+        assert_eq!(open_row[idx("city_resolved")], "");
+        assert_eq!(open_row[idx("city_population")], "");
 
         let main_row = rows
             .iter()
             .skip(1)
             .find(|row| row[0] == "Main Street")
             .unwrap();
-        assert_eq!(main_row[1], "");
-        assert_eq!(main_row[2], "street");
-        assert_eq!(main_row[5], "Placetown");
-        assert_eq!(main_row[6], "town");
-        assert_eq!(main_row[7], "Placetown");
-        assert_eq!(main_row[8], "Placetown");
+        assert_eq!(main_row[idx("name_lang")], "");
+        assert_eq!(main_row[idx("kind")], "street");
+        assert_eq!(main_row[idx("city_place_node")], "Placetown");
+        assert_eq!(main_row[idx("city_place_type")], "town");
+        assert_eq!(main_row[idx("city_place_city")], "Placetown");
+        assert_eq!(main_row[idx("city_resolved")], "Placetown");
+        assert_eq!(main_row[idx("city_population")], "12345");
 
         let translated_row = rows
             .iter()
             .skip(1)
             .find(|row| row[0] == "Ville Place")
             .unwrap();
-        assert_eq!(translated_row[1], "fr");
+        assert_eq!(translated_row[idx("name_lang")], "fr");
     }
 
     #[test]

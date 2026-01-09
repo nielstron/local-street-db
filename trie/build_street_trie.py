@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import unicodedata
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
@@ -77,17 +78,18 @@ def add_location_entry(
     node_idx: int,
     city_idx: int,
     kind_byte: int,
-    locations: List[Tuple[float, float, int, int, int]],
-    location_index: Dict[Tuple[float, float, int, int, int], int],
+    pop_k: int,
+    locations: List[Tuple[float, float, int, int, int, int]],
+    location_index: Dict[Tuple[float, float, int, int, int, int], int],
 ) -> None:
     if not name:
         return
-    loc_key = (lon, lat, node_idx, city_idx, kind_byte)
+    loc_key = (lon, lat, node_idx, city_idx, kind_byte, pop_k)
     index = location_index.get(loc_key)
     if index is None:
         index = len(locations)
         location_index[loc_key] = index
-        locations.append((lon, lat, node_idx, city_idx, kind_byte))
+        locations.append((lon, lat, node_idx, city_idx, kind_byte, pop_k))
     insert_trie(trie, name, index)
 
 
@@ -126,8 +128,8 @@ def add_countries_to_trie(
     node_index: Dict[str, int],
     city_names: List[str],
     city_index: Dict[str, int],
-    locations: List[Tuple[float, float, int, int, int]],
-    location_index: Dict[Tuple[float, float, int, int, int], int],
+    locations: List[Tuple[float, float, int, int, int, int]],
+    location_index: Dict[Tuple[float, float, int, int, int, int], int],
 ) -> None:
     for code, name, lon, lat in countries:
         if code and code not in node_index:
@@ -146,6 +148,7 @@ def add_countries_to_trie(
             node_idx,
             city_idx,
             COUNTRY_KIND_BYTE,
+            0,
             locations,
             location_index,
         )
@@ -158,6 +161,7 @@ def add_countries_to_trie(
                 node_idx,
                 city_idx,
                 COUNTRY_KIND_BYTE,
+                0,
                 locations,
                 location_index,
             )
@@ -194,10 +198,10 @@ def compress_trie(trie: Dict) -> Dict:
 def build_trie(
     input_path: Path,
     countries_path: Path | None = DEFAULT_COUNTRIES_PATH,
-) -> Tuple[List[Tuple[float, float, int, int, int]], List[str], List[str], Dict]:
-    locations: List[Tuple[float, float, int, int, int]] = []
-    location_index: Dict[Tuple[float, float, int, int, int], int] = {}
-    name_dedupe: Dict[Tuple[float, float, int, int, int], set[str]] = {}
+) -> Tuple[List[Tuple[float, float, int, int, int, int]], List[str], List[str], Dict]:
+    locations: List[Tuple[float, float, int, int, int, int]] = []
+    location_index: Dict[Tuple[float, float, int, int, int, int], int] = {}
+    name_dedupe: Dict[Tuple[float, float, int, int, int, int], set[str]] = {}
     node_names: List[str] = [""]
     node_index: Dict[str, int] = {"": 0}
     city_names: List[str] = [""]
@@ -246,7 +250,8 @@ def build_trie(
 
             kind_str = (row.get("kind") or "").strip().lower()
             kind_byte = KIND_TO_BYTE.get(kind_str, DEFAULT_KIND_BYTE)
-            dedupe_key = (lon, lat, node_idx, city_idx, kind_byte)
+            pop_k = population_k_nibble(row.get("city_population"))
+            dedupe_key = (lon, lat, node_idx, city_idx, kind_byte, pop_k)
             seen_names = name_dedupe.setdefault(dedupe_key, set())
             if name in seen_names:
                 continue
@@ -259,6 +264,7 @@ def build_trie(
                 node_idx,
                 city_idx,
                 kind_byte,
+                pop_k,
                 locations,
                 location_index,
             )
@@ -366,7 +372,8 @@ def build_trie_shards(
 
             kind_str = (row.get("kind") or "").strip().lower()
             kind_byte = KIND_TO_BYTE.get(kind_str, DEFAULT_KIND_BYTE)
-            dedupe_key = (lon, lat, node_idx, city_idx, kind_byte)
+            pop_k = population_k_nibble(row.get("city_population"))
+            dedupe_key = (lon, lat, node_idx, city_idx, kind_byte, pop_k)
             seen_names = shard["name_dedupe"].setdefault(dedupe_key, set())
             if name in seen_names:
                 continue
@@ -379,6 +386,7 @@ def build_trie_shards(
                 node_idx,
                 city_idx,
                 kind_byte,
+                pop_k,
                 shard["locations"],
                 shard["location_index"],
             )
@@ -421,6 +429,7 @@ def build_trie_shards(
             node_idx,
             city_idx,
             COUNTRY_KIND_BYTE,
+            0,
             shard["locations"],
             shard["location_index"],
         )
@@ -433,6 +442,7 @@ def build_trie_shards(
                 node_idx,
                 city_idx,
                 COUNTRY_KIND_BYTE,
+                0,
                 shard["locations"],
                 shard["location_index"],
             )
@@ -550,7 +560,7 @@ def build_louds(trie: Dict) -> Tuple[int, int, int, bytes, List[str], List[List[
 
 
 def pack_trie(
-    locations: List[Tuple[float, float, int, int, int]],
+    locations: List[Tuple[float, float, int, int, int, int]],
     node_names: List[str],
     city_names: List[str],
     trie: Dict,
@@ -558,7 +568,7 @@ def pack_trie(
 ) -> bytes:
     out = bytearray()
     out.extend(b"STRI")
-    out.append(11)
+    out.append(12)
     if scale < 0 or scale > 0xFFFFFF:
         raise ValueError("scale must fit in 3 bytes")
     out.extend(scale.to_bytes(3, "little", signed=False))
@@ -568,10 +578,10 @@ def pack_trie(
     out.extend(encode_prefix_table(re_nodes))
     out.extend(encode_prefix_table(re_cities))
 
-    remapped_locations: List[Tuple[float, float, int, int, int]] = []
-    for lon, lat, node_idx, city_idx, kind_byte in locations:
+    remapped_locations: List[Tuple[float, float, int, int, int, int]] = []
+    for lon, lat, node_idx, city_idx, kind_byte, pop_k in locations:
         remapped_locations.append(
-            (lon, lat, node_index[node_idx], city_index[city_idx], kind_byte)
+            (lon, lat, node_index[node_idx], city_index[city_idx], kind_byte, pop_k)
         )
 
     node_count, edge_count, bit_count, louds_bytes, edge_labels, values_per_node = build_louds(trie)
@@ -584,33 +594,34 @@ def pack_trie(
         out.extend(encode_varint(len(label_bytes)))
         out.extend(label_bytes)
 
-    pending_kind: int | None = None
-
-    def write_kind_nibble(kind_byte: int) -> None:
-        nonlocal pending_kind
-        nibble = kind_byte & 0x0F
-        if pending_kind is None:
-            pending_kind = nibble
-        else:
-            out.append(pending_kind | (nibble << 4))
-            pending_kind = None
-
     for values in values_per_node:
         out.extend(encode_varint(len(values)))
         for value in values:
-            lon, lat, node_idx, city_idx, kind_byte = remapped_locations[value]
+            lon, lat, node_idx, city_idx, kind_byte, pop_k = remapped_locations[value]
             lon_i = int(round(lon * scale))
             lat_i = int(round(lat * scale))
             out.extend(lon_i.to_bytes(3, "little", signed=True))
             out.extend(lat_i.to_bytes(3, "little", signed=True))
             out.extend(encode_varint(node_idx))
             out.extend(encode_varint(city_idx))
-            write_kind_nibble(kind_byte)
-
-    if pending_kind is not None:
-        out.append(pending_kind)
+            out.append((kind_byte & 0x0F) | ((pop_k & 0x0F) << 4))
 
     return bytes(out)
+
+
+def population_k_nibble(value: str | None) -> int:
+    if not value:
+        return 0
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if not digits:
+        return 0
+    try:
+        population = int(digits)
+    except ValueError:
+        return 0
+    if population < 1000:
+        return 0
+    return min(15, int(round(math.log2(population / 1000))))
 
 
 def write_payload(payload: Dict, output_path: Path, output_format: str) -> None:

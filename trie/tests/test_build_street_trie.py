@@ -72,7 +72,7 @@ def test_lookup_trie_with_compressed_edges():
 
 def test_write_payload_msgpack(tmp_path: Path) -> None:
     payload = {
-        "locations": [(1.0, 2.0, 0, 0, 0)],
+        "locations": [(1.0, 2.0, 0, 0, 0, 0)],
         "city_place_nodes": [""],
         "city_place_cities": ["Testville"],
         "trie": {"a": {TERMINAL_KEY: [0]}},
@@ -85,7 +85,7 @@ def test_write_payload_msgpack(tmp_path: Path) -> None:
 
     data = msgpack.unpackb(out_path.read_bytes(), raw=False)
     assert data == {
-        "locations": [[1.0, 2.0, 0, 0, 0]],
+        "locations": [[1.0, 2.0, 0, 0, 0, 0]],
         "city_place_nodes": [""],
         "city_place_cities": ["Testville"],
         "trie": {"a": {TERMINAL_KEY: [0]}},
@@ -107,7 +107,7 @@ def decode_varint(data: bytes, offset: int) -> tuple[int, int]:
 
 def test_pack_trie_binary_format() -> None:
     payload = {
-        "locations": [(1.0, 2.0, 0, 0, 0)],
+        "locations": [(1.0, 2.0, 0, 0, 0, 0)],
         "city_place_nodes": [""],
         "city_place_cities": ["Testville"],
         "trie": {"a": {TERMINAL_KEY: [0]}},
@@ -121,7 +121,7 @@ def test_pack_trie_binary_format() -> None:
     )
 
     assert data[:4] == b"STRI"
-    assert data[4] == 11
+    assert data[4] == 12
     scale = data[5] | (data[6] << 8) | (data[7] << 16)
     assert scale == 10_000
     offset = 8
@@ -168,13 +168,14 @@ def test_pack_trie_binary_format() -> None:
     offset += 6
     node_idx, offset = decode_varint(data, offset)
     city_idx, offset = decode_varint(data, offset)
-    kind_byte = data[offset] & 0x0F
+    packed = data[offset]
     offset += 1
     assert lon == 10_000
     assert lat == 20_000
     assert node_idx == 0
     assert city_idx == 0
-    assert kind_byte == 0
+    assert (packed & 0x0F) == 0
+    assert (packed >> 4) == 0
 
 
 def test_build_trie_from_csv(tmp_path: Path) -> None:
@@ -197,34 +198,43 @@ def test_build_trie_from_csv(tmp_path: Path) -> None:
                 "city_place_node",
                 "city_place_type",
                 "city_place_city",
+                "city_population",
             ]
         )
-        writer.writerow(["Main St", "", "street", "1.0", "2.0", "Node A", "city", "City A"])
-        writer.writerow(["Main St", "", "street", "1.0", "2.0", "Node A", "city", "City A"])
-        writer.writerow(["Main St", "", "street", "3.0", "4.0", "Node B", "city", "City B"])
-        writer.writerow(["Second St", "", "bus_stop", "5.0", "6.0", "", "city", "City C"])
-        writer.writerow(["Third St", "", "street", "7.0", "8.0", "Suburb A", "suburb", "City A"])
+        writer.writerow(
+            ["Main St", "", "street", "1.0", "2.0", "Node A", "city", "City A", "100000"]
+        )
+        writer.writerow(
+            ["Main St", "", "street", "1.0", "2.0", "Node A", "city", "City A", "100000"]
+        )
+        writer.writerow(
+            ["Main St", "", "street", "3.0", "4.0", "Node B", "city", "City B", "200000"]
+        )
+        writer.writerow(["Second St", "", "bus_stop", "5.0", "6.0", "", "city", "City C", ""])
+        writer.writerow(
+            ["Third St", "", "street", "7.0", "8.0", "Suburb A", "suburb", "City A", "100000"]
+        )
 
     locations, nodes, cities, trie = build_trie(csv_path, countries_path)
     assert locations == [
-        (1.0, 2.0, 1, 1, 0),
-        (3.0, 4.0, 2, 2, 0),
-        (5.0, 6.0, 0, 3, 3),
-        (7.0, 8.0, 3, 1, 0),
-        (10.0, 9.0, 4, 4, 10),
-        (12.0, -5.0, 5, 5, 10),
+        (1.0, 2.0, 1, 1, 0, 7),
+        (3.0, 4.0, 2, 2, 0, 8),
+        (5.0, 6.0, 0, 3, 3, 0),
+        (7.0, 8.0, 3, 1, 0, 7),
+        (10.0, 9.0, 4, 4, 10, 0),
+        (12.0, -5.0, 5, 5, 10, 0),
     ]
     assert nodes == ["", "Node A", "Node B", "Suburb A", "AA", "BB"]
     assert cities == ["", "City A", "City B", "City C", "Country A", "Country B"]
     compressed = compress_trie(trie)
-    assert lookup_trie(compressed, "Main St") == [0, 0, 2]
-    assert lookup_trie(compressed, "Second St") == [4]
-    assert lookup_trie(compressed, "Third St") == [6]
+    assert lookup_trie(compressed, "Main St") == [0, 1]
+    assert lookup_trie(compressed, "Second St") == [2]
+    assert lookup_trie(compressed, "Third St") == [3]
     assert lookup_trie(compressed, "City A") == []
     assert lookup_trie(compressed, "City B") == []
     assert lookup_trie(compressed, "City C") == []
     assert lookup_trie(compressed, "Suburb A") == []
-    assert lookup_trie(compressed, "Country A") == [8]
-    assert lookup_trie(compressed, "Country B") == [9]
-    assert lookup_trie(compressed, "AA") == [8]
-    assert lookup_trie(compressed, "BB") == [9]
+    assert lookup_trie(compressed, "Country A") == [4]
+    assert lookup_trie(compressed, "Country B") == [5]
+    assert lookup_trie(compressed, "AA") == [4]
+    assert lookup_trie(compressed, "BB") == [5]

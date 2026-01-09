@@ -56,12 +56,12 @@ function decodePackedTrie(buffer) {
     throw new Error("Invalid trie file");
   }
   const version = view.getUint8(4);
-  if (version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 9 && version !== 10 && version !== 11) {
+  if (version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 9 && version !== 10 && version !== 11 && version !== 12) {
     throw new Error(`Unsupported version ${version}`);
   }
   let scale;
   let offset;
-  if (version === 5 || version === 6 || version === 7 || version === 9 || version === 10 || version === 11) {
+  if (version === 5 || version === 6 || version === 7 || version === 9 || version === 10 || version === 11 || version === 12) {
     scale =
       view.getUint8(5) |
       (view.getUint8(6) << 8) |
@@ -180,7 +180,13 @@ function decodePackedTrie(buffer) {
         [nodeIdx, offset] = decodeVarint(view, offset);
         let cityIdx;
         [cityIdx, offset] = decodeVarint(view, offset);
-        if (version >= 11) {
+        if (version >= 12) {
+          const byte = view.getUint8(offset);
+          offset += 1;
+          const kind = byte & 0x0f;
+          const pop = (byte >> 4) & 0x0f;
+          values.push([lon / scale, lat / scale, nodeIdx, cityIdx, kind, pop]);
+        } else if (version >= 11) {
           const entryIndex = values.length;
           values.push([lon / scale, lat / scale, nodeIdx, cityIdx, 0]);
           if (!pendingKindRef) {
@@ -335,6 +341,11 @@ class StreetLookup {
     this.shardCache = new Map();
     this.shardLoads = new Map();
     this.allowedKinds = this.normalizeKinds(opts.allowedKinds);
+    this.debug =
+      typeof window !== "undefined" &&
+      window.location &&
+      (window.location.hostname === "localhost" ||
+        window.location.hostname === "127.0.0.1");
   }
 
   normalizeKinds(value) {
@@ -385,12 +396,28 @@ class StreetLookup {
       return this.shardLoads.get(shardKey);
     }
     const url = `${this.shardRoot}/${this.shardBase}.shard_${shardKey}${this.shardSuffix}`;
+    if (this.debug) {
+      console.log("[street-lookup] load shard", { shardKey, url });
+    }
     const loadPromise = fetch(url).then(async (response) => {
       if (!response.ok) {
+        if (this.debug) {
+          console.warn("[street-lookup] shard fetch failed", {
+            shardKey,
+            status: response.status,
+          });
+        }
         throw new Error(`Missing shard ${shardKey}`);
       }
       const buffer = await response.arrayBuffer();
       const decoded = decodePackedTrie(maybeGunzip(buffer));
+      if (this.debug) {
+        console.log("[street-lookup] shard decoded", {
+          shardKey,
+          locations: decoded.locations?.length ?? 0,
+          nodes: decoded.trie?.nodes?.length ?? 0,
+        });
+      }
       this.shardCache.set(shardKey, decoded);
       this.shardLoads.delete(shardKey);
       return decoded;
@@ -516,6 +543,14 @@ class StreetLookup {
       cityQuery = query.slice(commaIndex + 1).trim();
     }
     const normalized = this.normalize(streetQuery.trim());
+    if (this.debug) {
+      console.log("[street-lookup] lookup", {
+        query,
+        streetQuery,
+        cityQuery,
+        normalized,
+      });
+    }
     if (!normalized) {
       return {
         status: "empty",
@@ -524,6 +559,12 @@ class StreetLookup {
       };
     }
     if (normalized.length < this.shardPrefixLen) {
+      if (this.debug) {
+        console.log("[street-lookup] query too short", {
+          normalizedLength: normalized.length,
+          minLength: this.shardPrefixLen,
+        });
+      }
       return {
         status: "short",
         minLength: this.shardPrefixLen,
@@ -533,6 +574,9 @@ class StreetLookup {
 
     const shardKey = this.getShardKey(streetQuery);
     if (!shardKey) {
+      if (this.debug) {
+        console.log("[street-lookup] no shard key", { streetQuery });
+      }
       return {
         status: "short",
         minLength: this.shardPrefixLen,
@@ -559,6 +603,12 @@ class StreetLookup {
         if (lookupId !== this.lookupId) {
           return { status: "stale", shardKey, results: [] };
         }
+        if (this.debug) {
+          console.warn("[street-lookup] shard load error", {
+            shardKey,
+            error: String(err),
+          });
+        }
         this.trie = null;
         this.locations = [];
         this.locationsCount = 0;
@@ -570,17 +620,63 @@ class StreetLookup {
     }
 
     if (!this.trie) {
+      if (this.debug) {
+        console.warn("[street-lookup] missing trie", { shardKey });
+      }
       return { status: "missing", shardKey, results: [] };
     }
 
     const matches = this.collectMatches(streetQuery, cityQuery);
-    const results = matches.map((entry) => ({
-      ...entry,
-      location: entry.location ?? this.locations[entry.index] ?? null,
-      placeLabel: this.buildPlaceLabel(entry.location, entry.index),
-      kindByte:
-        (entry.location ?? this.locations[entry.index] ?? [])[4] ?? 0,
-    }));
+    if (this.debug) {
+      console.log("[street-lookup] matches", {
+        shardKey,
+        total: matches.length,
+      });
+    }
+    const results = matches.map((entry) => {
+      const location = entry.location ?? this.locations[entry.index] ?? null;
+      const loc = location ?? [];
+      const normalizedDisplay = this.normalize(entry.display ?? "");
+      return {
+        ...entry,
+        location,
+        placeLabel: this.buildPlaceLabel(entry.location, entry.index),
+        kindByte: loc[4] ?? 0,
+        populationK: loc[5] ?? 0,
+        exactMatch: normalizedDisplay === normalized,
+      };
+    });
+
+    const kindGroup = (kindByte) => {
+      if (kindByte === 9) return 0; // city
+      if (kindByte === 0) return 1; // street
+      return 2;
+    };
+    results.sort((a, b) => {
+      const exactDiff = (a.exactMatch ? 0 : 1) - (b.exactMatch ? 0 : 1);
+      if (exactDiff !== 0) return exactDiff;
+      const groupDiff = kindGroup(a.kindByte ?? 0) - kindGroup(b.kindByte ?? 0);
+      if (groupDiff !== 0) return groupDiff;
+      const popDiff = (b.populationK ?? 0) - (a.populationK ?? 0);
+      if (popDiff !== 0) return popDiff;
+      const kindDiff = (a.kindByte ?? 0) - (b.kindByte ?? 0);
+      if (kindDiff !== 0) return kindDiff;
+      const aLabel = String(a.display ?? "");
+      const bLabel = String(b.display ?? "");
+      const lenDiff = aLabel.length - bLabel.length;
+      if (lenDiff !== 0) return lenDiff;
+      return aLabel.localeCompare(bLabel);
+    });
+    if (this.debug) {
+      const exactCount = results.reduce(
+        (count, entry) => count + (entry.exactMatch ? 1 : 0),
+        0
+      );
+      console.log("[street-lookup] sorted matches", {
+        exact: exactCount,
+        other: results.length - exactCount,
+      });
+    }
 
     return {
       status: "ready",
